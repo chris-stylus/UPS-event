@@ -4,41 +4,40 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Smart QR Event Wallet</title>
-    <!-- 1. Tailwind CSS -->
-    <script src="https://cdn.tailwindcss.com"></script>
-    <!-- 2. QR Code Generation Library -->
-    <script src="https://cdnjs.cloudflare.com/ajax/libs/qrcodejs/1.0.0/qrcode.min.js"></script>
-    <!-- 3. QR Code Scanning Library -->
-    <script src="https://unpkg.com/html5-qrcode@2.0.9/dist/html5-qrcode.min.js"></script>
-    <!-- 4. Firebase SDKs -->
-    <script type="module">
+    <!-- 1. Tailwind CSS --><script src="https://cdn.tailwindcss.com"></script>
+    <!-- 2. QR Code Generation Library --><script src="https://cdnjs.cloudflare.com/ajax/libs/qrcodejs/1.0.0/qrcode.min.js"></script>
+    <!-- 3. QR Code Scanning Library --><script src="https://unpkg.com/html5-qrcode@2.0.9/dist/html5-qrcode.min.js"></script>
+    <!-- 4. Razorpay Checkout Script --><script src="https://checkout.razorpay.com/v1/checkout.js"></script>
+    <!-- 5. Firebase SDKs --><script type="module">
         // Import Firebase modules
         import { initializeApp } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-app.js";
-        import { 
-            getAuth, 
-            signInAnonymously, 
-            signInWithCustomToken, 
+        import {
+            getAuth,
+            signInAnonymously,
+            signInWithCustomToken,
             onAuthStateChanged,
             setPersistence,
             inMemoryPersistence
         } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-auth.js";
-        import { 
-            getFirestore, 
-            doc, 
-            getDoc, 
-            setDoc, 
-            updateDoc, 
-            deleteDoc, 
-            onSnapshot, 
-            collection, 
-            query, 
-            where, 
-            addDoc, 
+        import {
+            getFirestore,
+            doc,
+            getDoc,
+            setDoc,
+            updateDoc,
+            deleteDoc,
+            onSnapshot,
+            collection,
+            query,
+            where,
+            addDoc,
             getDocs,
             serverTimestamp,
             increment,
             arrayUnion,
-            runTransaction
+            arrayRemove,
+            runTransaction,
+            setLogLevel
         } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-firestore.js";
         import { getAnalytics } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-analytics.js";
 
@@ -46,33 +45,34 @@
         let db, auth, analytics;
         let html5QrCode; // Main scanner
         let stallQrScanner; // Stall's payment scanner
+        let adminRechargeQrScanner; // Admin's recharge scanner
         let currentUnsubscribes = []; // To detach listeners on logout
         let appState = {
             currentUser: null, // { id, name, role, balance }
             currentView: 'home',
             rechargeAmount: 0,
             scannedStudentId: null,
+            scannedStudentName: null,
             stallCart: {},
+            allTransactionsForExport: [],
         };
         let modal, modalMessage, modalButton;
+        let confirmModal, confirmModalMessage, btnConfirmYes, btnConfirmNo;
+        let confirmCallback = null;
+
 
         // --- FIREBASE CONFIG & PATHS ---
-        // ----------------- IMPORTANT -----------------
-        // This is a unique ID for your event data. 
-        // You can change this to 'school-fest-2025' or any unique name.
-        const appId = 'my-event-wallet';
-        // ---------------------------------------------
-        
+        const appId = typeof __app_id !== 'undefined' ? __app_id : 'my-event-wallet';
+
         // --- DOM Elements ---
         let views = {};
-        let homeView, adminLoginView, adminDashboardView, scannerView, studentDashboardView, stallDashboardView, stallPaymentView, loadingView, rechargeView;
 
         // --- FIREBASE COLLECTION REFERENCES ---
-        // Using public collections for this shared event app
         const usersRef = () => collection(db, 'artifacts', appId, 'public', 'data', 'users');
         const stallsRef = () => collection(db, 'artifacts', appId, 'public', 'data', 'stalls');
         const transactionsRef = () => collection(db, 'artifacts', appId, 'public', 'data', 'transactions');
         const configRef = () => doc(db, 'artifacts', appId, 'public', 'data', 'eventConfig', 'config');
+        const classesRef = () => doc(db, 'artifacts', appId, 'public', 'data', 'eventConfig', 'classes');
 
         // --- INITIALIZATION ---
         document.addEventListener('DOMContentLoaded', () => {
@@ -86,15 +86,20 @@
                 stallDashboard: document.getElementById('stallDashboardView'),
                 stallPayment: document.getElementById('stallPaymentView'),
                 loading: document.getElementById('loadingView'),
-                recharge: document.getElementById('rechargeView'),
+                adminRecharge: document.getElementById('adminRechargeView'),
             };
             modal = document.getElementById('modal');
             modalMessage = document.getElementById('modalMessage');
             modalButton = document.getElementById('modalButton');
 
+            confirmModal = document.getElementById('confirmModal');
+            confirmModalMessage = document.getElementById('confirmModalMessage');
+            btnConfirmYes = document.getElementById('btnConfirmYes');
+            btnConfirmNo = document.getElementById('btnConfirmNo');
+
             // Initialize Firebase
             initFirebase();
-            
+
             // Attach base event listeners
             attachHomeListeners();
             attachAdminLoginListeners();
@@ -103,53 +108,53 @@
             attachStudentDashboardListeners();
             attachStallDashboardListeners();
             attachStallPaymentListeners();
-            attachRechargeListeners();
+            attachAdminRechargeListeners();
 
-            modalButton.onclick = () => modal.classList.add('hidden');
+            if (modalButton) {
+                modalButton.onclick = () => modal.classList.add('hidden');
+            } else {
+                 console.error("Error: Could not find button with ID 'modalButton'");
+            }
+
+            // Ensure confirm buttons exist before adding listeners
+            if (btnConfirmNo) {
+                btnConfirmNo.onclick = () => {
+                    confirmCallback = null;
+                    confirmModal.classList.add('hidden');
+                };
+            } else {
+                 console.error("Error: Could not find button with ID 'btnConfirmNo'");
+            }
+
+            if (btnConfirmYes) {
+                btnConfirmYes.onclick = () => {
+                    if (confirmCallback) {
+                        confirmCallback();
+                    }
+                    confirmCallback = null;
+                    confirmModal.classList.add('hidden');
+                };
+            } else {
+                 console.error("Error: Could not find button with ID 'btnConfirmYes'");
+            }
         });
 
         async function initFirebase() {
             try {
-              /*  // ----------------- YOUR FIREBASE CONFIG GOES HERE -----------------
-                // This config is for the "school-wallet-udaya" project you provided.
-               / const firebaseConfig = {
-                  apiKey: "AIzaSyBNN0fWJISI2T9sqQ1U_T3C8ZO5yGGh6Ug",
-                  authDomain: "school-wallet-udaya.firebaseapp.com",
-                  projectId: "school-wallet-udaya",
-                  storageBucket: "school-wallet-udaya.firebasestorage.app",
-                  messagingSenderId: "432765586897",
-                  appId: "1:432765586897:web:27239002a2529b152a64f0",
-                  measurementId: "G-4FPHGP27WK"
-                };
-          */
-                // -------------------------------------------------------------------
-                
-                // --- UNCOMMENT THIS BLOCK FOR GITHUB PAGES DEPLOYMENT ---
-                
-                const firebaseConfig = {
-                  apiKey: "AIzaSyCsuWEjnrYr1g7ruvZ60ur6TADzbHkJpno",
-                  authDomain: "qr-wallet-2ef48.firebaseapp.com",
-                  projectId: "qr-wallet-2ef48",
-                  storageBucket: "qr-wallet-2ef48.firebasestorage.app",
-                  messagingSenderId: "755057942199",
-                  appId: "1:755057942199:web:f5fa763b08534bcf1f3732",
-                  measurementId: "G-NSLXTCC8JM"
-                };
-                
-                if (firebaseConfig.projectId === "YOUR_PROJECT_ID") {
-                     showAlert("SETUP REQUIRED: Please add your Firebase project config to index.html (around line 125) before deploying.");
-                     console.error("Firebase config is not set.");
-                     return;
+                // Use the provided __firebase_config
+                if (typeof __firebase_config === 'undefined' || !__firebase_config) {
+                    showAlert("SETUP REQUIRED: Firebase configuration is missing. This app cannot run without it.");
+                    console.error("Firebase config (__firebase_config) is not set.");
+                    return;
                 }
-                
-                // --- END UNCOMMENT BLOCK ---
-
+                const firebaseConfig = JSON.parse(__firebase_config);
 
                 // 2. Initialize Firebase
                 const app = initializeApp(firebaseConfig);
                 db = getFirestore(app);
                 auth = getAuth(app);
                 analytics = getAnalytics(app);
+                setLogLevel('Debug'); // Enable Firestore logging
 
                 // 3. Set persistence to in-memory for this transient app
                 await setPersistence(auth, inMemoryPersistence);
@@ -160,8 +165,12 @@
                         // 5. No user, sign in.
                         showLoading('Connecting to event...');
                         try {
-                            // For public deployment, we sign in users anonymously.
-                            await signInAnonymously(auth);
+                            // Use __initial_auth_token if available, else sign in anonymously
+                            if (typeof __initial_auth_token !== 'undefined' && __initial_auth_token) {
+                                await signInWithCustomToken(auth, __initial_auth_token);
+                            } else {
+                                await signInAnonymously(auth);
+                            }
                             console.log("Firebase Auth successful.");
                             // Auth state change will re-trigger this listener
                         } catch (error) {
@@ -192,7 +201,7 @@
             cleanupListeners();
             // Stop any active scanners
             stopAllScanners();
-            
+
             appState.currentView = viewId;
             for (const id in views) {
                 if (views[id]) {
@@ -204,26 +213,40 @@
             }
             hideLoading();
         }
-        
+
         function showLoading(message) {
             document.getElementById('loadingMessage').textContent = message;
-            views.loading.classList.remove('hidden');
+            if (views.loading) views.loading.classList.remove('hidden');
         }
 
         function hideLoading() {
-            views.loading.classList.add('hidden');
+            if (views.loading) views.loading.classList.add('hidden');
         }
 
         function showAlert(message) {
-            modalMessage.textContent = message;
-            modal.classList.remove('hidden');
+            if (modalMessage && modal) {
+                modalMessage.textContent = message;
+                modal.classList.remove('hidden');
+            } else {
+                console.error("Modal elements not found for showAlert:", message);
+            }
         }
-        
+
+        function showConfirm(message, onYesCallback) {
+             if (confirmModalMessage && confirmModal) {
+                confirmModalMessage.textContent = message;
+                confirmCallback = onYesCallback;
+                confirmModal.classList.remove('hidden');
+            } else {
+                console.error("Confirm modal elements not found for showConfirm:", message);
+            }
+        }
+
         function cleanupListeners() {
             currentUnsubscribes.forEach(unsub => unsub());
             currentUnsubscribes = [];
         }
-        
+
         function stopAllScanners() {
             try {
                 if (html5QrCode && html5QrCode.isScanning) {
@@ -234,7 +257,7 @@
             } catch (e) {
                 console.warn("Error accessing main scanner:", e);
             }
-            
+
             try {
                 if (stallQrScanner && stallQrScanner.isScanning) {
                     stallQrScanner.stop().catch(err => {
@@ -244,11 +267,22 @@
             } catch (e) {
                 console.warn("Error accessing stall scanner:", e);
             }
+
+            try {
+                if (adminRechargeQrScanner && adminRechargeQrScanner.isScanning) {
+                    adminRechargeQrScanner.stop().catch(err => {
+                        console.warn("Admin recharge scanner stop error (ignorable):", err);
+                    });
+                }
+            } catch (e) {
+                console.warn("Error accessing admin recharge scanner:", e);
+            }
         }
-        
+
         function logout() {
             appState.currentUser = null;
             appState.scannedStudentId = null;
+            appState.scannedStudentName = null;
             appState.stallCart = {};
             showView('home');
         }
@@ -264,29 +298,28 @@
         function attachScannerListeners() {
             document.getElementById('btnCancelScan').onclick = () => showView('home');
         }
-        
+
         function startScanner(loginType) {
             showView('scanner');
             const scannerTitle = document.getElementById('scannerTitle');
             scannerTitle.textContent = `Scan ${loginType.charAt(0).toUpperCase() + loginType.slice(1)} QR Code`;
-            
+
             // Check if instance already exists
             if (!html5QrCode) {
                 html5QrCode = new Html5Qrcode("qr-reader");
             }
-            
+
             const config = { fps: 10, qrbox: { width: 250, height: 250 } };
-            
+
             // (decodedText, decodedResult)
             const onScanSuccess = (decodedText) => {
                 handleLoginScan(decodedText, loginType);
             };
-            
+
             const onScanFailure = (error) => {
-                // This will fire continuously, so be careful logging.
                 // console.warn(`QR scan failure: ${error}`);
             };
-            
+
             html5QrCode.start({ facingMode: "environment" }, config, onScanSuccess, onScanFailure)
                 .catch(err => {
                     console.error("Scanner start error:", err);
@@ -294,33 +327,33 @@
                     showView('home');
                 });
         }
-        
+
         async function handleLoginScan(userId, loginType) {
             // Stop scanner *before* navigating
             stopAllScanners();
             showLoading('Verifying QR Code...');
-            
+
             try {
                 const userDocRef = doc(usersRef(), userId);
                 const userDoc = await getDoc(userDocRef);
-                
+
                 if (!userDoc.exists()) {
                     throw new Error('Invalid QR Code. Not found in system.');
                 }
-                
+
                 const user = userDoc.data();
                 if (user.role !== loginType) {
                     throw new Error(`Incorrect QR Code. This is a ${user.role} QR, not a ${loginType} QR.`);
                 }
-                
+
                 appState.currentUser = { id: userId, ...user };
-                
+
                 if (loginType === 'student') {
                     loadStudentDashboard();
                 } else if (loginType === 'stall') {
                     loadStallDashboard();
                 }
-                
+
             } catch (error) {
                 console.error("Login Scan Error:", error);
                 showAlert(error.message);
@@ -332,16 +365,17 @@
         function attachAdminLoginListeners() {
             document.getElementById('btnAdminLoginBack').onclick = () => showView('home');
             document.getElementById('btnAdminLoginSubmit').onclick = async () => {
-                const password = document.getElementById('adminPassword').value;
+                const passwordInput = document.getElementById('adminPassword'); // Get the element
+                const password = passwordInput.value;
                 if (!password) {
                     showAlert('Please enter a password.');
                     return;
                 }
-                
+
                 showLoading('Verifying password...');
                 try {
                     const config = await getDoc(configRef());
-                    
+
                     if (!config.exists()) {
                         // First time login, set default password
                         await setDoc(configRef(), { adminPassword: 'admin123' });
@@ -349,6 +383,8 @@
                             showAlert('First time setup. Default password is "admin123".');
                             loadAdminDashboard();
                         } else {
+                            console.log('Password mismatch on first setup. Expected:', '"admin123"', 'Typed_Pass:', `"${password}"`);
+                            passwordInput.value = ''; // Clear password field
                             throw new Error('Wrong password.');
                         }
                     } else {
@@ -356,21 +392,107 @@
                         if (config.data().adminPassword === password) {
                             loadAdminDashboard();
                         } else {
+                            console.log('Password mismatch. DB_Pass:', `"${config.data().adminPassword}"`, 'Typed_Pass:', `"${password}"`);
+                            passwordInput.value = ''; // Clear password field
                             throw new Error('Wrong password.');
                         }
                     }
                 } catch (error) {
                     console.error("Admin Login Error:", error);
                     showAlert(error.message);
+                    passwordInput.value = ''; // Clear password on any error
                     hideLoading();
                 }
             };
+
+            document.getElementById('btnAdminResetPassword').onclick = () => {
+                showConfirm("Are you sure you want to reset the admin password to 'admin123'?", async () => {
+                    showLoading('Resetting password...');
+                    try {
+                        await setDoc(configRef(), { adminPassword: 'admin123' });
+                        hideLoading();
+                        showAlert('Password has been reset to "admin123". You can now log in.');
+                    } catch (error) {
+                        console.error("Password Reset Error:", error);
+                        hideLoading();
+                        showAlert('Error resetting password: ' + error.message);
+                    }
+                });
+            };
         }
+
+        // --- [NEW FUNCTION - MOVED HERE] ---
+        async function handleClassFilterChange(e) {
+            const className = e.target.value;
+            const studentListEl = document.getElementById('adminStudentListByClass');
+            const qrContainer = document.getElementById('adminSearchQRContainer');
+
+            // Clear previous results
+            studentListEl.innerHTML = '';
+            qrContainer.innerHTML = '';
+            qrContainer.classList.add('hidden');
+
+            if (!className) {
+                return; // "Select a Class" was chosen
+            }
+
+            showLoading('Fetching students...');
+            try {
+                const q = query(usersRef(), where('role', '==', 'student'), where('class', '==', className));
+                const snapshot = await getDocs(q);
+
+                if (snapshot.empty) {
+                    studentListEl.innerHTML = '<p class="text-gray-400">No students found in this class.</p>';
+                    hideLoading();
+                    return;
+                }
+
+                studentListEl.innerHTML = snapshot.docs.map(doc => {
+                    const student = doc.data();
+                    return `
+                        <button class="btn-show-qr w-full text-left bg-gray-700 hover:bg-gray-600 p-3 rounded-lg"
+                                data-id="${student.userId}"
+                                data-name="${student.name}"
+                                data-class="${student.class}">
+                            ${student.name}
+                        </button>
+                    `;
+                }).join('');
+
+                // Add click listeners to new student buttons
+                document.querySelectorAll('.btn-show-qr').forEach(btn => {
+                    btn.onclick = (e) => {
+                        // Highlight this button
+                        document.querySelectorAll('.btn-show-qr').forEach(b => b.classList.remove('bg-blue-600'));
+                        e.currentTarget.classList.add('bg-blue-600');
+
+                        // Display the QR
+                        const studentData = e.currentTarget.dataset;
+                        displayUserQR(qrContainer, {
+                            id: studentData.id,
+                            name: studentData.name,
+                            class: studentData.class,
+                            role: 'student'
+                        });
+                    };
+                });
+
+                hideLoading();
+
+            } catch (error) {
+                console.error("Filter Students Error:", error);
+                showAlert('Error fetching students.');
+                studentListEl.innerHTML = '<p class="text-red-500">Error loading students.</p>';
+                hideLoading();
+            }
+        }
+        // --- [END MOVED FUNCTION] ---
+
 
         // --- ADMIN DASHBOARD LOGIC ---
         function attachAdminDashboardListeners() {
             document.getElementById('btnAdminLogout').onclick = logout;
-            
+
             // Tab navigation
             const tabs = document.querySelectorAll('#adminDashboardView .admin-tab');
             const tabPanels = document.querySelectorAll('#adminDashboardView .admin-tab-panel');
@@ -380,7 +502,7 @@
                     tabs.forEach(t => t.classList.remove('bg-blue-600', 'text-white'));
                     tabs.forEach(t => t.classList.add('bg-gray-700', 'text-gray-300'));
                     tabPanels.forEach(p => p.classList.add('hidden'));
-                    
+
                     // Set active styles
                     tab.classList.add('bg-blue-600', 'text-white');
                     tab.classList.remove('bg-gray-700', 'text-gray-300');
@@ -388,34 +510,130 @@
                 };
             });
 
-            // --- User Management ---
+            // --- Student Management ---
             document.getElementById('btnAdminGenerateStudent').onclick = () => generateUser('student');
-            document.getElementById('btnAdminGenerateStall').onclick = () => generateUser('stall');
-            
+            document.getElementById('btnAdminRechargeStudent').onclick = () => startAdminRechargeScan();
+            document.getElementById('adminSearchClassSelect').onchange = handleClassFilterChange;
+
+            // --- Class Management ---
+            document.getElementById('btnAdminAddClass').onclick = addAdminClass;
+
             // --- Stall Management ---
+            document.getElementById('btnAdminGenerateStall').onclick = () => generateUser('stall');
             document.getElementById('btnAdminAddMenuItem').onclick = addMenuItem;
+            document.getElementById('btnAdminSearchStall').onclick = searchStall;
+
+            // --- Reports ---
+            document.getElementById('btnExportCSV').onclick = exportTransactionsToCSV;
         }
+
+        function displayUserQR(containerElement, user) {
+            containerElement.innerHTML = ''; // Clear it first
+            containerElement.classList.remove('hidden'); // Ensure it's visible
+
+            // Add title
+            const titleEl = document.createElement('h3');
+            titleEl.className = "text-lg font-semibold mb-2";
+            if (user.role === 'student') {
+                titleEl.textContent = `${user.name} (${user.class || 'N/A'})`;
+            } else {
+                titleEl.textContent = user.name;
+            }
+            containerElement.appendChild(titleEl);
+
+            // Create dedicated div for QR
+            const qrCodeDiv = document.createElement('div');
+            qrCodeDiv.className = "flex justify-center"; // Center the QR image
+            containerElement.appendChild(qrCodeDiv);
+
+            // Generate QR in the dedicated div
+            new QRCode(qrCodeDiv, {
+                text: user.id, // The user's document ID
+                width: 200,
+                height: 200,
+                colorDark: "#000000",
+                colorLight: "#ffffff",
+                correctLevel: QRCode.CorrectLevel.H
+            });
+
+            // Add text ID
+            const textEl = document.createElement('p');
+            textEl.className = "text-xs mt-2 break-all";
+            textEl.textContent = user.id;
+            containerElement.appendChild(textEl);
+        }
+
+        async function searchStall() {
+            const stallName = document.getElementById('adminSearchStallName').value;
+            const qrContainer = document.getElementById('adminSearchStallQRContainer');
+
+            if (!stallName) {
+                showAlert('Please enter a stall name to search.');
+                return;
+            }
+
+            showLoading('Searching...');
+            qrContainer.innerHTML = ''; // Clear previous results
+
+            try {
+                // Search the users collection for the stall
+                const q = query(usersRef(), where('role', '==', 'stall'), where('name', '==', stallName));
+                const snapshot = await getDocs(q);
+
+                if (snapshot.empty) {
+                    throw new Error('No stall found with that exact name.');
+                }
+
+                // Display the first match
+                const stallUser = snapshot.docs[0].data();
+                displayUserQR(qrContainer, {
+                    id: stallUser.userId, // Use the stored userId (which is the doc id)
+                    name: stallUser.name,
+                    role: 'stall'
+                });
+
+                document.getElementById('adminSearchStallName').value = '';
+                hideLoading();
+
+            } catch (error) {
+                console.error("Search Stall Error:", error);
+                showAlert(error.message);
+                qrContainer.innerHTML = '<p class="text-red-500">Search failed.</p>';
+                hideLoading();
+            }
+        }
+
 
         function loadAdminDashboard() {
             showView('adminDashboard');
             appState.currentUser = { id: 'admin', role: 'admin' };
-            
+
             // Load all data
             loadAdminStudents();
             loadAdminStallsAndMenus();
             loadAdminReports();
+            loadAdminClasses();
         }
 
         async function generateUser(role) {
             const nameInputId = role === 'student' ? 'adminStudentName' : 'adminStallName';
             const name = document.getElementById(nameInputId).value;
             const qrContainerId = role === 'student' ? 'adminStudentQRContainer' : 'adminStallQRContainer';
-            
+
+            let studentClass = null;
+            if (role === 'student') {
+                studentClass = document.getElementById('adminStudentClass').value;
+                if (!studentClass) {
+                    showAlert('Please enter a student class.');
+                    return;
+                }
+            }
+
             if (!name) {
                 showAlert(`Please enter a ${role} name.`);
                 return;
             }
-            
+
             showLoading(`Generating ${role}...`);
             try {
                 // 1. Create the user document
@@ -423,6 +641,7 @@
                     name,
                     role,
                     balance: role === 'student' ? 0 : null,
+                    class: role === 'student' ? studentClass : null,
                     createdAt: serverTimestamp()
                 };
                 const newDocRef = await addDoc(usersRef(), newUser);
@@ -430,7 +649,7 @@
 
                 // 2. Update user with their own ID
                 await updateDoc(newDocRef, { userId: userId });
-                
+
                 // 3. If it's a stall, create the stall-specific doc
                 if (role === 'stall') {
                     await setDoc(doc(stallsRef(), userId), {
@@ -439,49 +658,109 @@
                         menu: []
                     });
                 }
-                
+
                 // 4. Generate QR Code
                 const qrContainer = document.getElementById(qrContainerId);
-                qrContainer.innerHTML = ''; // Clear it first
+                displayUserQR(qrContainer, { id: userId, name: name, class: studentClass, role: role });
 
-                // Add title
-                const titleEl = document.createElement('h3');
-                titleEl.className = "text-lg font-semibold mb-2";
-                titleEl.textContent = name;
-                qrContainer.appendChild(titleEl);
-                
-                // Create dedicated div for QR
-                const qrCodeDiv = document.createElement('div');
-                qrCodeDiv.className = "flex justify-center"; // Center the QR image
-                qrContainer.appendChild(qrCodeDiv);
-
-                // Generate QR in the dedicated div
-                new QRCode(qrCodeDiv, {
-                    text: userId,
-                    width: 200,
-                    height: 200,
-                    colorDark: "#000000",
-                    colorLight: "#ffffff",
-                    correctLevel: QRCode.CorrectLevel.H
-                });
-
-                // Add text ID
-                const textEl = document.createElement('p');
-                textEl.className = "text-xs mt-2 break-all";
-                textEl.textContent = userId;
-                qrContainer.appendChild(textEl);
-                
                 document.getElementById(nameInputId).value = '';
+                if (role === 'student') {
+                    document.getElementById('adminStudentClass').value = '';
+                }
                 hideLoading();
                 showAlert(`${role.charAt(0).toUpperCase() + role.slice(1)} created successfully!`);
-                
+
             } catch (error) {
                 console.error(`Generate ${role} Error:`, error);
                 showAlert(`Error creating ${role}.`);
                 hideLoading();
             }
         }
-        
+
+        function loadAdminClasses() {
+            const unsub = onSnapshot(classesRef(), (doc) => {
+                const listEl = document.getElementById('adminClassList');
+                const selectEl = document.getElementById('adminSearchClassSelect');
+
+                let classNames = [];
+                if (doc.exists() && doc.data().classNames) {
+                    classNames = doc.data().classNames;
+                }
+
+                // 1. Populate the management list (with delete buttons)
+                if (classNames.length === 0) {
+                    listEl.innerHTML = '<p class="text-gray-400">No classes added yet.</p>';
+                } else {
+                    listEl.innerHTML = classNames.map(name => `
+                        <div class="bg-gray-700 p-3 rounded-lg flex justify-between items-center">
+                            <span>${name}</span>
+                            <button data-name="${name}" class="btn-delete-class bg-red-600 hover:bg-red-700 text-white px-3 py-1 rounded-lg text-sm">Delete</button>
+                        </div>
+                    `).join('');
+                }
+
+                // 2. Populate the filter dropdown
+                selectEl.innerHTML = '<option value="">Select a Class</option>'; // Default option
+                selectEl.innerHTML += classNames.map(name => `
+                    <option value="${name}">${name}</option>
+                `).join('');
+
+                // 3. Add event listeners to delete buttons
+                document.querySelectorAll('.btn-delete-class').forEach(btn => {
+                    btn.onclick = (e) => {
+                        const className = e.target.dataset.name;
+                        showConfirm(`Are you sure you want to delete class "${className}"? This cannot be undone.`, () => {
+                            deleteAdminClass(className);
+                        });
+                    };
+                });
+            });
+            currentUnsubscribes.push(unsub);
+        }
+
+        async function addAdminClass() {
+            const classNameInput = document.getElementById('adminClassName');
+            const className = classNameInput.value.trim();
+            if (!className) {
+                showAlert('Please enter a class name.');
+                return;
+            }
+
+            showLoading('Adding class...');
+            try {
+                // Use setDoc with merge:true to create or update the single doc
+                await setDoc(classesRef(), {
+                    classNames: arrayUnion(className)
+                }, { merge: true });
+
+                classNameInput.value = '';
+                hideLoading();
+                showAlert('Class added successfully.');
+            } catch (error) {
+                console.error("Add Class Error:", error);
+                showAlert('Error adding class.');
+                hideLoading();
+            }
+        }
+
+        async function deleteAdminClass(className) {
+            if (!className) return;
+
+            showLoading('Deleting class...');
+            try {
+                await updateDoc(classesRef(), {
+                    classNames: arrayRemove(className) // Use arrayRemove
+                });
+                hideLoading();
+                showAlert('Class deleted.');
+            } catch (error) {
+                console.error("Delete Class Error:", error);
+                showAlert('Error deleting class.');
+                hideLoading();
+            }
+        }
+
+
         function loadAdminStudents() {
             const q = query(usersRef(), where('role', '==', 'student'));
             const unsub = onSnapshot(q, (snapshot) => {
@@ -493,7 +772,7 @@
                 listEl.innerHTML = snapshot.docs.map(doc => {
                     const user = doc.data();
                     return `<div class="bg-gray-700 p-3 rounded-lg flex justify-between items-center">
-                                <span>${user.name}</span>
+                                <span>${user.name} (${user.class || 'N/A'})</span>
                                 <span class="text-green-400">₹${user.balance.toFixed(2)}</span>
                             </div>`;
                 }).join('');
@@ -504,34 +783,69 @@
         function loadAdminStallsAndMenus() {
             const q = query(stallsRef());
             const unsub = onSnapshot(q, (snapshot) => {
-                const listEl = document.getElementById('adminStallList');
+                const listEl = document.getElementById('adminStallMenuList');
                 const selectEl = document.getElementById('adminStallSelect');
-                
+
                 if (snapshot.empty) {
                     const msg = '<p class="text-gray-400">No stalls generated yet.</p>';
                     listEl.innerHTML = msg;
                     selectEl.innerHTML = '<option value="">No stalls available</option>';
                     return;
                 }
-                
+
                 listEl.innerHTML = snapshot.docs.map(doc => {
                     const stall = doc.data();
                     return `<div class="bg-gray-700 p-4 rounded-lg">
-                                <h4 class="text-lg font-semibold">${stall.name}</h4>
+                                <div class="flex justify-between items-center mb-2">
+                                    <h4 class="text-lg font-semibold">${stall.name}</h4>
+                                    <button data-id="${stall.ownerId}" data-name="${stall.name}" class="btn-delete-stall bg-red-600 hover:bg-red-700 text-white px-3 py-1 rounded-lg text-sm">Delete</button>
+                                </div>
                                 <div id="menu-list-${stall.ownerId}" class="mt-2 space-y-1">
                                     ${renderMenuList(stall.menu)}
                                 </div>
                             </div>`;
                 }).join('');
-                
+
                 selectEl.innerHTML = snapshot.docs.map(doc => {
                     const stall = doc.data();
                     return `<option value="${stall.ownerId}">${stall.name}</option>`;
                 }).join('');
+
+                // Add listeners for new delete buttons
+                document.querySelectorAll('.btn-delete-stall').forEach(btn => {
+                    btn.onclick = (e) => {
+                        const stallId = e.currentTarget.dataset.id;
+                        const stallName = e.currentTarget.dataset.name;
+                        showConfirm(`Are you sure you want to delete stall "${stallName}"? This will delete the stall, its user, and its menu. This cannot be undone.`, () => {
+                            _deleteStall(stallId);
+                        });
+                    };
+                });
             });
             currentUnsubscribes.push(unsub);
         }
-        
+
+        async function _deleteStall(stallId) {
+            if (!stallId) return;
+
+            showLoading('Deleting stall...');
+            try {
+                const userDocRef = doc(usersRef(), stallId);
+                const stallDocRef = doc(stallsRef(), stallId);
+
+                // Delete both documents
+                await deleteDoc(userDocRef);
+                await deleteDoc(stallDocRef);
+
+                hideLoading();
+                showAlert('Stall successfully deleted.');
+            } catch (error) {
+                console.error("Delete Stall Error:", error);
+                showAlert('Error deleting stall.');
+                hideLoading();
+            }
+        }
+
         function renderMenuList(menu) {
             if (!menu || menu.length === 0) {
                 return '<p class="text-sm text-gray-400">No menu items yet.</p>';
@@ -543,17 +857,17 @@
                 </div>
             `).join('');
         }
-        
+
         async function addMenuItem() {
             const stallId = document.getElementById('adminStallSelect').value;
             const name = document.getElementById('adminItemName').value;
             const price = parseFloat(document.getElementById('adminItemPrice').value);
-            
+
             if (!stallId || !name || !price) {
                 showAlert('Please fill out all fields for the menu item.');
                 return;
             }
-            
+
             showLoading('Adding item...');
             try {
                 const stallDocRef = doc(stallsRef(), stallId);
@@ -562,84 +876,217 @@
                     name,
                     price
                 };
-                
+
                 await updateDoc(stallDocRef, {
                     menu: arrayUnion(newItem)
                 });
-                
+
                 document.getElementById('adminItemName').value = '';
                 document.getElementById('adminItemPrice').value = '';
                 hideLoading();
                 showAlert('Menu item added!');
-                
+
             } catch (error) {
                 console.error("Add Menu Item Error:", error);
                 showAlert('Error adding item.');
                 hideLoading();
             }
         }
-        
+
         function loadAdminReports() {
-            const q = query(transactionsRef());
-            const unsub = onSnapshot(q, (snapshot) => {
-                const listEl = document.getElementById('adminTransactionList');
-                let totalSales = 0;
-                let totalRecharged = 0;
-                const stallSales = {};
-                
-                if (snapshot.empty) {
-                    listEl.innerHTML = '<p class="text-gray-400">No transactions yet.</p>';
-                    document.getElementById('adminTotalSales').textContent = '₹0.00';
-                    document.getElementById('adminTotalRecharged').textContent = '₹0.00';
-                    document.getElementById('adminStallSalesSummary').innerHTML = '';
-                    return;
-                }
-                
-                const transactions = snapshot.docs.map(doc => {
-                    const tx = doc.data();
-                    if (tx.type === 'purchase') {
-                        totalSales += tx.amount;
-                        stallSales[tx.stallName] = (stallSales[tx.stallName] || 0) + tx.amount;
-                    } else if (tx.type === 'recharge') {
-                        totalRecharged += tx.amount;
+            let allTransactionsData = [];
+            let allStudentClassMap = new Map();
+
+            // 1. Listener for ALL transactions
+            const qTx = query(transactionsRef());
+            const unsubTx = onSnapshot(qTx, (snapshot) => {
+                allTransactionsData = snapshot.docs.map(doc => doc.data());
+                _recalculateAdminReports(allTransactionsData, allStudentClassMap);
+            });
+            currentUnsubscribes.push(unsubTx);
+
+            // 2. Listener for ALL student users (to get their class)
+            const qUsers = query(usersRef(), where('role', '==', 'student'));
+            const unsubUsers = onSnapshot(qUsers, (snapshot) => {
+                allStudentClassMap = new Map(snapshot.docs.map(doc => [doc.id, doc.data().class || 'N/A']));
+                _recalculateAdminReports(allTransactionsData, allStudentClassMap);
+            });
+            currentUnsubscribes.push(unsubUsers);
+        }
+
+        function _recalculateAdminReports(transactions, studentClassMap) {
+            const listEl = document.getElementById('adminTransactionList');
+
+            // --- Init metrics ---
+            let totalSales = 0;
+            let totalRecharged = 0;
+            let purchaseCount = 0;
+            let rechargeCount = 0;
+            const stallSales = {};
+            const topItems = {};
+            const classSpending = {};
+
+            if (transactions.length === 0) {
+                listEl.innerHTML = '<p class="text-gray-400">No transactions yet.</p>';
+                document.getElementById('adminTotalSales').textContent = '₹0.00';
+                document.getElementById('adminTotalRecharged').textContent = '₹0.00';
+                document.getElementById('adminOutstandingBalance').textContent = '₹0.00';
+                document.getElementById('adminTotalTransactions').textContent = '0';
+                document.getElementById('adminAvgPurchaseValue').textContent = '₹0.00';
+                document.getElementById('adminStallSalesSummary').innerHTML = '<p class="text-gray-400 text-sm">No sales yet.</p>';
+                document.getElementById('adminTopItemsList').innerHTML = '<p class="text-gray-400 text-sm">No items sold yet.</p>';
+                document.getElementById('adminClassSpendingSummary').innerHTML = '<p class="text-gray-400 text-sm">No spending data yet.</p>';
+                return;
+            }
+
+            // --- Process all transactions ---
+            transactions.forEach(tx => {
+                if (tx.type === 'purchase') {
+                    totalSales += tx.amount;
+                    purchaseCount++;
+                    stallSales[tx.stallName] = (stallSales[tx.stallName] || 0) + tx.amount;
+
+                    // Aggregate top items
+                    if (tx.items) {
+                        tx.items.forEach(item => {
+                            topItems[item.name] = (topItems[item.name] || 0) + item.quantity;
+                        });
                     }
-                    return tx;
-                });
-                
-                document.getElementById('adminTotalSales').textContent = `₹${totalSales.toFixed(2)}`;
-                document.getElementById('adminTotalRecharged').textContent = `₹${totalRecharged.toFixed(2)}`;
-                
-                const stallSalesEl = document.getElementById('adminStallSalesSummary');
-                stallSalesEl.innerHTML = Object.entries(stallSales).map(([name, amount]) => `
+
+                    // Aggregate class spending
+                    const studentClass = studentClassMap.get(tx.studentId) || 'N/A';
+                    classSpending[studentClass] = (classSpending[studentClass] || 0) + tx.amount;
+
+                } else if (tx.type === 'recharge') {
+                    totalRecharged += tx.amount;
+                    rechargeCount++;
+                }
+            });
+
+            // --- Calculate derived metrics ---
+            const outstandingBalance = totalRecharged - totalSales;
+            const totalTransactions = purchaseCount + rechargeCount;
+            const avgPurchaseValue = purchaseCount > 0 ? totalSales / purchaseCount : 0;
+
+            // --- 1. Update Financials Section ---
+            document.getElementById('adminTotalRecharged').textContent = `₹${totalRecharged.toFixed(2)}`;
+            document.getElementById('adminTotalSales').textContent = `₹${totalSales.toFixed(2)}`;
+            document.getElementById('adminOutstandingBalance').textContent = `₹${outstandingBalance.toFixed(2)}`;
+            document.getElementById('adminTotalTransactions').textContent = totalTransactions;
+            document.getElementById('adminAvgPurchaseValue').textContent = `₹${avgPurchaseValue.toFixed(2)}`;
+
+            // --- 2. Update Sales per Stall Section ---
+            const stallSalesEl = document.getElementById('adminStallSalesSummary');
+            if (Object.keys(stallSales).length > 0) {
+                stallSalesEl.innerHTML = Object.entries(stallSales)
+                    .sort((a, b) => b[1] - a[1]) // Sort descending by amount
+                    .map(([name, amount]) => `
                     <div class="flex justify-between p-2 bg-gray-700 rounded">
                         <span>${name}</span>
                         <span class="font-medium">₹${amount.toFixed(2)}</span>
                     </div>
                 `).join('');
-                
-                listEl.innerHTML = transactions.map(tx => {
-                    const time = tx.timestamp ? new Date(tx.timestamp.seconds * 1000).toLocaleTimeString() : '...';
-                    if (tx.type === 'purchase') {
-                        return `<div class="bg-gray-700 p-3 rounded-lg">
-                                    <p class="font-semibold">${tx.studentName} paid ${tx.stallName}</p>
-                                    <p class="text-sm">${tx.items.map(i => `${i.name} (x${i.quantity})`).join(', ')}</p>
-                                    <div class="flex justify-between items-center mt-1">
-                                        <span class="text-red-400 font-bold">- ₹${tx.amount.toFixed(2)}</span>
-                                        <span class="text-xs text-gray-400">${time}</span>
-                                    </div>
-                                </div>`;
-                    } else {
-                        return `<div class="bg-gray-700 p-3 rounded-lg">
-                                    <p class="font-semibold">${tx.studentName} recharged wallet</p>
-                                    <div class="flex justify-between items-center mt-1">
-                                        <span class="text-green-400 font-bold">+ ₹${tx.amount.toFixed(2)}</span>
-                                        <span class="text-xs text-gray-400">${time}</span>
-                                    </div>
-                                </div>`;
-                    }
-                }).reverse().join('');
+            } else {
+                stallSalesEl.innerHTML = '<p class="text-gray-400 text-sm">No sales yet.</p>';
+            }
+
+            // --- 3. Update Top-Selling Items Section ---
+            const topItemsEl = document.getElementById('adminTopItemsList');
+            if (Object.keys(topItems).length > 0) {
+                topItemsEl.innerHTML = Object.entries(topItems)
+                    .sort((a, b) => b[1] - a[1]) // Sort descending by quantity
+                    .slice(0, 10) // Get top 10
+                    .map(([name, quantity]) => `
+                    <div class="flex justify-between p-2 bg-gray-700 rounded">
+                        <span class="font-medium">${name}</span>
+                        <span>${quantity} sold</span>
+                    </div>
+                `).join('');
+            } else {
+                topItemsEl.innerHTML = '<p class="text-gray-400 text-sm">No items sold yet.</p>';
+            }
+
+            // --- 4. Update Spending by Class Section ---
+            const classSpendingEl = document.getElementById('adminClassSpendingSummary');
+            if (Object.keys(classSpending).length > 0) {
+                classSpendingEl.innerHTML = Object.entries(classSpending)
+                    .sort((a, b) => b[1] - a[1]) // Sort descending by amount
+                    .map(([name, amount]) => `
+                    <div class="flex justify-between p-2 bg-gray-700 rounded">
+                        <span>Class ${name}</span>
+                        <span class="font-medium">₹${amount.toFixed(2)}</span>
+                    </div>
+                `).join('');
+            } else {
+                classSpendingEl.innerHTML = '<p class="text-gray-400 text-sm">No spending data yet.</p>';
+            }
+
+            // --- 5. Update All Transactions List ---
+            listEl.innerHTML = transactions.map(tx => {
+                const time = tx.timestamp ? new Date(tx.timestamp.seconds * 1000).toLocaleTimeString() : '...';
+                if (tx.type === 'purchase') {
+                    return `<div class="bg-gray-700 p-3 rounded-lg">
+                                <p class="font-semibold">${tx.studentName} paid ${tx.stallName}</p>
+                                <p class="text-sm">${tx.items.map(i => `${i.name} (x${i.quantity})`).join(', ')}</p>
+                                <div class="flex justify-between items-center mt-1">
+                                    <span class="text-red-400 font-bold">- ₹${tx.amount.toFixed(2)}</span>
+                                    <span class="text-xs text-gray-400">${time}</span>
+                                </div>
+                            </div>`;
+                } else {
+                    const recharger = tx.adminName ? tx.adminName : tx.studentName; // Admin or self-recharge
+                    return `<div class="bg-gray-700 p-3 rounded-lg">
+                                <p class="font-semibold">${tx.studentName} recharged wallet</p>
+                                <p class="text-sm text-gray-400">Processed by: ${recharger}</p>
+                                <div class="flex justify-between items-center mt-1">
+                                    <span class="text-green-400 font-bold">+ ₹${tx.amount.toFixed(2)}</span>
+                                    <span class="text-xs text-gray-400">${time}</span>
+                                </div>
+                            </div>`;
+                }
+            }).reverse().join('');
+
+            // Store for export
+            appState.allTransactionsForExport = transactions;
+        }
+
+        function exportTransactionsToCSV() {
+            const transactions = appState.allTransactionsForExport || [];
+            if (transactions.length === 0) {
+                showAlert('No transactions to export.');
+                return;
+            }
+
+            const escapeCSV = (str) => `"${(str || '').replace(/"/g, '""')}"`;
+
+            let csvContent = "data:text/csv;charset=utf-8,";
+            // Add headers
+            csvContent += "Date,Time,Type,Student Name,Amount,Stall Name,Items,Processed By\r\n";
+
+            transactions.forEach(tx => {
+                const time = tx.timestamp ? new Date(tx.timestamp.seconds * 1000) : new Date();
+                const dateStr = time.toLocaleDateString();
+                const timeStr = time.toLocaleTimeString();
+
+                const type = tx.type;
+                const student = escapeCSV(tx.studentName);
+                const amount = tx.amount.toFixed(2);
+                const stall = escapeCSV(tx.stallName || 'N/A');
+                const items = escapeCSV(tx.items ? tx.items.map(i => `${i.name} (x${i.quantity})`).join(" | ") : 'N/A');
+                const processor = escapeCSV(tx.adminName || (tx.type === 'recharge' ? 'Self' : 'N/A'));
+
+                let row = [dateStr, timeStr, type, student, amount, stall, items, processor].join(",");
+                csvContent += row + "\r\n";
             });
-            currentUnsubscribes.push(unsub);
+
+            // Create download link
+            const encodedUri = encodeURI(csvContent);
+            const link = document.createElement("a");
+            link.setAttribute("href", encodedUri);
+            link.setAttribute("download", `event_transactions_${new Date().toISOString().split('T')[0]}.csv`);
+            document.body.appendChild(link);
+            link.click();
+            document.body.removeChild(link);
         }
 
         // --- STUDENT DASHBOARD LOGIC ---
@@ -647,24 +1094,23 @@
             document.getElementById('btnStudentLogout').onclick = logout;
             document.getElementById('btnStudentBack').onclick = logout;
             document.getElementById('btnStudentRecharge').onclick = () => {
-                const amount = parseFloat(document.getElementById('studentRechargeAmount').value);
+                const amountInput = document.getElementById('studentRechargeAmount');
+                const amount = parseFloat(amountInput.value);
                 if (!amount || amount <= 0) {
                     showAlert('Please enter a valid amount to recharge.');
                     return;
                 }
-                appState.rechargeAmount = amount;
-                document.getElementById('rechargeAmountDisplay').textContent = `₹${amount.toFixed(2)}`;
-                showView('recharge');
+                startRazorpayPayment(amount);
+                amountInput.value = ''; // Clear input
             };
         }
-        
+
         function loadStudentDashboard() {
             showView('studentDashboard');
-            
-            // Set name
+
             document.getElementById('studentName').textContent = appState.currentUser.name;
             document.getElementById('studentIdDisplay').textContent = `ID: ${appState.currentUser.id}`;
-            
+
             // Listen for balance changes
             const userDocRef = doc(usersRef(), appState.currentUser.id);
             const unsubBalance = onSnapshot(userDocRef, (doc) => {
@@ -673,20 +1119,16 @@
                     appState.currentUser.balance = user.balance;
                     document.getElementById('studentBalance').textContent = `₹${user.balance.toFixed(2)}`;
                 } else {
-                    // User might have been deleted
                     showAlert("Your user account was not found. Logging out.");
                     logout();
                 }
             });
             currentUnsubscribes.push(unsubBalance);
-            
-            // Load stalls and prices
+
             loadStudentStallList();
-            
-            // Load transaction history
             loadStudentTransactionHistory();
         }
-        
+
         async function loadStudentStallList() {
             const listEl = document.getElementById('studentStallList');
             try {
@@ -709,11 +1151,11 @@
                 listEl.innerHTML = '<p class="text-red-400">Error loading stalls.</p>';
             }
         }
-        
+
         function loadStudentTransactionHistory() {
             const q = query(transactionsRef(), where('studentId', '==', appState.currentUser.id));
             const listEl = document.getElementById('studentTransactionList');
-            
+
             const unsubHistory = onSnapshot(q, (snapshot) => {
                 if (snapshot.empty) {
                     listEl.innerHTML = '<p class="text-gray-400">No transactions yet.</p>';
@@ -732,8 +1174,11 @@
                                     </div>
                                 </div>`;
                     } else {
+                        const recharger = tx.adminName ? tx.adminName : 'Self'; // Admin or self-recharge
                         return `<div class="bg-gray-700 p-3 rounded-lg">
                                     <p class="font-semibold">Wallet Recharge</p>
+                                    <p class="text-sm text-gray-400">Processed by: ${recharger}</p>
+                                    ${tx.paymentId ? `<p class="text-xs text-gray-500 mt-1">ID: ${tx.paymentId}</p>` : ''}
                                     <div class="flex justify-between items-center mt-1">
                                         <span class="text-green-400 font-bold">+ ₹${tx.amount.toFixed(2)}</span>
                                         <span class="text-xs text-gray-400">${time}</span>
@@ -745,24 +1190,61 @@
             currentUnsubscribes.push(unsubHistory);
         }
 
-        // --- RECHARGE VIEW LOGIC ---
-        function attachRechargeListeners() {
-            document.getElementById('btnPaymentSuccess').onclick = handleRecharge;
-            document.getElementById('btnRechargeBack').onclick = () => loadStudentDashboard();
-            document.getElementById('btnPaymentFail').onclick = () => {
-                showAlert('Payment failed. Please try again.');
-                document.getElementById('studentRechargeAmount').value = '';
-                showView('studentDashboard');
+        // --- RECHARGE VIEW LOGIC (NOW RAZORPAY) ---
+
+        function startRazorpayPayment(amount) {
+            showLoading('Connecting to payment gateway...');
+
+            const options = {
+                key: "rzp_test_RYNSaIzd3JiFrb", // Your Public Key ID
+                amount: amount * 100, // Amount in paise
+                currency: "INR",
+                name: "Smart QR Event Wallet",
+                description: "Wallet Recharge",
+                image: "ups logo.png", // Use school logo
+                prefill: {
+                    name: appState.currentUser.name,
+                    email: "", // Optional
+                    contact: "" // Optional
+                },
+                theme: {
+                    color: "#3B82F6" // Blue theme
+                },
+                modal: {
+                    ondismiss: function() {
+                        console.log('Razorpay modal closed');
+                        hideLoading();
+                    }
+                },
+                handler: function (response){
+                    console.log('Razorpay success response:', response);
+                    processSuccessfulRecharge(response.razorpay_payment_id, amount);
+                }
             };
+
+            try {
+                const rzp = new Razorpay(options);
+                rzp.open();
+
+                rzp.on('payment.failed', function (response){
+                    console.error('Razorpay payment failed:', response);
+                    showAlert(`Payment Failed: ${response.error.description}`);
+                    hideLoading();
+                });
+
+            } catch (error) {
+                console.error("Razorpay init error:", error);
+                showAlert("Could not initialize payment gateway. Please try again.");
+                hideLoading();
+            }
         }
-        
-        async function handleRecharge() {
+
+        async function processSuccessfulRecharge(paymentId, amount) {
             showLoading('Processing Recharge...');
-            const amount = appState.rechargeAmount;
-            
+
             try {
                 const studentDocRef = doc(usersRef(), appState.currentUser.id);
-                
+
                 await runTransaction(db, async (transaction) => {
                     // Create transaction log first
                     const newTxRef = doc(transactionsRef()); // Auto-generate ID
@@ -771,20 +1253,20 @@
                         studentName: appState.currentUser.name,
                         amount: amount,
                         type: 'recharge',
+                        paymentId: paymentId,
                         timestamp: serverTimestamp()
                     });
-                    
+
                     // Update student balance
                     transaction.update(studentDocRef, {
                         balance: increment(amount)
                     });
                 });
-                
-                document.getElementById('studentRechargeAmount').value = '';
+
                 appState.rechargeAmount = 0;
                 showAlert('Recharge Successful!');
                 loadStudentDashboard(); // This will navigate to studentDashboard
-                
+
             } catch (error) {
                 console.error("Recharge Error:", error);
                 showAlert('Recharge failed. Please try again.');
@@ -801,9 +1283,9 @@
 
         function loadStallDashboard() {
             showView('stallDashboard');
-            
+
             document.getElementById('stallName').textContent = appState.currentUser.name;
-            
+
             // Load My Menu
             const stallDocRef = doc(stallsRef(), appState.currentUser.id);
             const unsubMenu = onSnapshot(stallDocRef, (doc) => {
@@ -818,12 +1300,12 @@
                 }
             });
             currentUnsubscribes.push(unsubMenu);
-            
+
             // Load Sales History
             const q = query(transactionsRef(), where('stallId', '==', appState.currentUser.id));
             const listEl = document.getElementById('stallSaleList');
             const salesTotalEl = document.getElementById('stallTotalSales');
-            
+
             const unsubHistory = onSnapshot(q, (snapshot) => {
                 let totalSales = 0;
                 if (snapshot.empty) {
@@ -831,12 +1313,12 @@
                     salesTotalEl.textContent = '₹0.00';
                     return;
                 }
-                
+
                 listEl.innerHTML = snapshot.docs.map(doc => {
                     const tx = doc.data();
                     totalSales += tx.amount;
                     const time = tx.timestamp ? new Date(tx.timestamp.seconds * 1000).toLocaleString() : '...';
-                    
+
                     return `<div class="bg-gray-700 p-3 rounded-lg">
                                 <p class="font-semibold">Sale to ${tx.studentName}</p>
                                 <p class="text-sm">${tx.items.map(i => `${i.name} (x${i.quantity})`).join(', ')}</p>
@@ -846,60 +1328,61 @@
                                 </div>
                             </div>`;
                 }).reverse().join('');
-                
+
                 salesTotalEl.textContent = `₹${totalSales.toFixed(2)}`;
             });
             currentUnsubscribes.push(unsubHistory);
         }
-        
+
         // --- STALL PAYMENT VIEW LOGIC ---
         function attachStallPaymentListeners() {
             document.getElementById('btnStallPaymentCancel').onclick = () => loadStallDashboard();
             document.getElementById('btnStallConfirmPayment').onclick = processPayment;
         }
-        
+
         function startStallPaymentScan() {
             showView('stallPayment');
             appState.scannedStudentId = null;
             appState.stallCart = {};
-            
+
             // Hide details, show scanner
             document.getElementById('stallPaymentDetails').classList.add('hidden');
             document.getElementById('stall-qr-reader-container').classList.remove('hidden');
             document.getElementById('btnStallConfirmPayment').classList.add('hidden');
-            
+
             if (!stallQrScanner) {
                 stallQrScanner = new Html5Qrcode("stall-qr-reader");
             }
             const config = { fps: 10, qrbox: { width: 250, height: 250 } };
-            
+
             const onScanSuccess = async (decodedText) => {
                 stopAllScanners();
                 showLoading('Fetching Student Details...');
-                
+
                 try {
                     const userDocRef = doc(usersRef(), decodedText);
                     const userDoc = await getDoc(userDocRef);
-                    
+
                     if (!userDoc.exists() || userDoc.data().role !== 'student') {
                         throw new Error('Invalid or non-student QR code.');
                     }
-                    
+
                     const student = userDoc.data();
                     appState.scannedStudentId = decodedText;
-                    
+                    appState.scannedStudentName = student.name;
+
                     // Show details, hide scanner
                     document.getElementById('stall-qr-reader-container').classList.add('hidden');
                     document.getElementById('stallPaymentDetails').classList.remove('hidden');
                     document.getElementById('btnStallConfirmPayment').classList.remove('hidden');
-                    
+
                     document.getElementById('stallPaymentStudentName').textContent = student.name;
                     document.getElementById('stallPaymentStudentBalance').textContent = `₹${student.balance.toFixed(2)}`;
-                    
+
                     // Build the menu/cart UI
                     buildCartUI(student.balance);
                     hideLoading();
-                    
+
                 } catch (error) {
                     console.error("Stall Scan Error:", error);
                     showAlert(error.message);
@@ -910,7 +1393,7 @@
             const onScanFailure = (error) => {
                 // console.warn(`Stall scan failure: ${error}`);
             };
-            
+
             stallQrScanner.start({ facingMode: "environment" }, config, onScanSuccess, onScanFailure)
                 .catch(err => {
                     console.error("Stall Scanner start error:", err);
@@ -918,7 +1401,7 @@
                     loadStallDashboard();
                 });
         }
-        
+
         function buildCartUI(studentBalance) {
             const cartEl = document.getElementById('stallCart');
             const menu = appState.currentUser.menu || [];
@@ -927,7 +1410,7 @@
                 document.getElementById('btnStallConfirmPayment').classList.add('hidden'); // Disable payment
                 return;
             }
-            
+
             cartEl.innerHTML = menu.map(item => `
                 <div class="bg-gray-700 p-3 rounded-lg flex items-center justify-between">
                     <div>
@@ -941,7 +1424,7 @@
                     </div>
                 </div>
             `).join('');
-            
+
             // Add event listeners to new buttons
             document.querySelectorAll('.btn-cart-change').forEach(btn => {
                 btn.onclick = (e) => {
@@ -950,44 +1433,44 @@
                     updateCart(id, isIncrement, studentBalance);
                 };
             });
-            
+
             updateCartTotal(studentBalance);
         }
-        
+
         function updateCart(itemId, isIncrement, studentBalance) {
             let currentQty = appState.stallCart[itemId] || 0;
-            
+
             if (isIncrement) {
                 currentQty++;
             } else {
                 currentQty = Math.max(0, currentQty - 1);
             }
-            
+
             appState.stallCart[itemId] = currentQty;
-            
+
             if (currentQty === 0) {
                 delete appState.stallCart[itemId];
             }
-            
+
             const qtyEl = document.getElementById(`cart-qty-${itemId}`);
             if (qtyEl) {
                 qtyEl.textContent = currentQty;
             }
             updateCartTotal(studentBalance);
         }
-        
+
         function updateCartTotal(studentBalance) {
             const totalEl = document.getElementById('stallCartTotal');
             const confirmBtn = document.getElementById('btnStallConfirmPayment');
             const menuMap = new Map(appState.currentUser.menu.map(i => [i.id, i]));
-            
+
             let total = 0;
             for (const [itemId, quantity] of Object.entries(appState.stallCart)) {
                 total += (menuMap.get(itemId)?.price || 0) * quantity;
             }
-            
+
             totalEl.textContent = `₹${total.toFixed(2)}`;
-            
+
             if (total > studentBalance) {
                 totalEl.classList.add('text-red-500');
                 totalEl.classList.remove('text-green-400');
@@ -1004,12 +1487,12 @@
                 }
             }
         }
-        
+
         async function processPayment() {
             const menuMap = new Map(appState.currentUser.menu.map(i => [i.id, i]));
             let totalAmount = 0;
             const cartItems = [];
-            
+
             for (const [itemId, quantity] of Object.entries(appState.stallCart)) {
                 if (quantity > 0) {
                     const item = menuMap.get(itemId);
@@ -1022,41 +1505,41 @@
                     });
                 }
             }
-            
+
             if (totalAmount === 0) {
                 showAlert('Cart is empty. Please add items.');
                 return;
             }
-            
+
             showLoading('Processing Payment...');
-            
+
             const studentId = appState.scannedStudentId;
             const stallId = appState.currentUser.id;
-            
+
             const studentDocRef = doc(usersRef(), studentId);
-            
+
             try {
                 await runTransaction(db, async (transaction) => {
                     const studentDoc = await transaction.get(studentDocRef);
                     if (!studentDoc.exists()) {
                         throw new Error("Student not found.");
                     }
-                    
+
                     const studentBalance = studentDoc.data().balance;
                     if (studentBalance < totalAmount) {
                         throw new Error("Insufficient student balance.");
                     }
-                    
+
                     // 1. Deduct from student
                     transaction.update(studentDocRef, {
                         balance: increment(-totalAmount)
                     });
-                    
+
                     // 2. Create transaction log
                     const newTxRef = doc(transactionsRef()); // Auto-ID
                     transaction.set(newTxRef, {
                         studentId: studentId,
-                        studentName: document.getElementById('stallPaymentStudentName').textContent, // From UI
+                        studentName: appState.scannedStudentName,
                         stallId: stallId,
                         stallName: appState.currentUser.name,
                         amount: totalAmount,
@@ -1065,12 +1548,127 @@
                         timestamp: serverTimestamp()
                     });
                 });
-                
+
                 showAlert('Payment Successful!');
                 loadStallDashboard(); // Go back to stall dash
-                
+
             } catch (error) {
                 console.error("Payment Error:", error);
+                showAlert(error.message);
+                hideLoading();
+            }
+        }
+
+        // --- ADMIN RECHARGE VIEW LOGIC ---
+
+        function attachAdminRechargeListeners() {
+            document.getElementById('btnAdminRechargeCancel').onclick = () => loadAdminDashboard();
+            document.getElementById('btnAdminConfirmRecharge').onclick = processAdminRecharge;
+        }
+
+        function startAdminRechargeScan() {
+            showView('adminRecharge');
+            appState.scannedStudentId = null;
+            appState.scannedStudentName = null;
+
+            // Hide details, show scanner
+            document.getElementById('adminRechargeDetails').classList.add('hidden');
+            document.getElementById('admin-recharge-qr-reader-container').classList.remove('hidden');
+            document.getElementById('btnAdminConfirmRecharge').classList.add('hidden');
+            document.getElementById('adminRechargeAmount').value = '';
+
+            if (!adminRechargeQrScanner) {
+                adminRechargeQrScanner = new Html5Qrcode("admin-recharge-qr-reader");
+            }
+            const config = { fps: 10, qrbox: { width: 250, height: 250 } };
+
+            const onScanSuccess = async (decodedText) => {
+                stopAllScanners();
+                showLoading('Fetching Student Details...');
+
+                try {
+                    const userDocRef = doc(usersRef(), decodedText);
+                    const userDoc = await getDoc(userDocRef);
+
+                    if (!userDoc.exists() || userDoc.data().role !== 'student') {
+                        throw new Error('Invalid or non-student QR code.');
+                    }
+
+                    const student = userDoc.data();
+                    appState.scannedStudentId = decodedText;
+                    appState.scannedStudentName = student.name;
+
+                    // Show details, hide scanner
+                    document.getElementById('admin-recharge-qr-reader-container').classList.add('hidden');
+                    document.getElementById('adminRechargeDetails').classList.remove('hidden');
+                    document.getElementById('btnAdminConfirmRecharge').classList.remove('hidden');
+
+                    document.getElementById('adminRechargeStudentName').textContent = `${student.name} (${student.class || 'N/A'})`;
+                    document.getElementById('adminRechargeStudentBalance').textContent = `₹${student.balance.toFixed(2)}`;
+
+                    hideLoading();
+
+                } catch (error) {
+                    console.error("Admin Recharge Scan Error:", error);
+                    showAlert(error.message);
+                    loadAdminDashboard();
+                }
+            };
+
+            const onScanFailure = (error) => {
+                // console.warn(`Admin recharge scan failure: ${error}`);
+            };
+
+            adminRechargeQrScanner.start({ facingMode: "environment" }, config, onScanSuccess, onScanFailure)
+                .catch(err => {
+                    console.error("Admin Recharge Scanner start error:", err);
+                    showAlert("Could not start camera.");
+                    loadAdminDashboard();
+                });
+        }
+
+        async function processAdminRecharge() {
+            const amount = parseFloat(document.getElementById('adminRechargeAmount').value);
+
+            if (!amount || amount <= 0) {
+                showAlert('Please enter a valid amount to recharge.');
+                return;
+            }
+
+            showLoading('Processing Recharge...');
+
+            const studentId = appState.scannedStudentId;
+            const studentDocRef = doc(usersRef(), studentId);
+
+            try {
+                await runTransaction(db, async (transaction) => {
+                    const studentDoc = await transaction.get(studentDocRef);
+                    if (!studentDoc.exists()) {
+                        throw new Error("Student not found.");
+                    }
+
+                    // 1. Update student balance
+                    transaction.update(studentDocRef, {
+                        balance: increment(amount)
+                    });
+
+                    // 2. Create transaction log
+                    const newTxRef = doc(transactionsRef()); // Auto-ID
+                    transaction.set(newTxRef, {
+                        studentId: studentId,
+                        studentName: appState.scannedStudentName,
+                        amount: amount,
+                        type: 'recharge',
+                        adminName: appState.currentUser.id, // 'admin'
+                        timestamp: serverTimestamp()
+                    });
+                });
+
+                showAlert('Recharge Successful!');
+                loadAdminDashboard(); // Go back to admin dash
+
+            } catch (error) {
+                console.error("Admin Recharge Error:", error);
                 showAlert(error.message);
                 hideLoading();
             }
@@ -1091,16 +1689,17 @@
 </head>
 <body class="bg-gray-900 text-white font-sans antialiased">
 
-    <!-- Main Container -->
-    <div class="container mx-auto p-4 max-w-lg min-h-screen">
+    <!-- Main Container --><div class="container mx-auto p-4 max-w-lg min-h-screen pb-16">
 
-        <!-- VIEW: Home -->
-        <div id="homeView" class="">
+        <!-- VIEW: Home --><div id="homeView" class="">
             <header class="text-center my-12">
+                 <!-- FIX: Changed src to ./ups logo.png -->
+                <img src="./ups logo.png" alt="Udaya Public School Logo" class="w-24 h-24 mx-auto mb-4"
+                    onerror="this.onerror=null; this.src='https://placehold.co/100x100/FFFFFF/000000?text=Logo';">
                 <h1 class="text-4xl font-bold text-blue-400 mb-2">Smart QR Event Wallet</h1>
-                <p class="text-lg text-gray-300">School Fest 2025</p>
+                <p class="text-lg text-gray-300">Udaya Public School - Annual Fest 2025-26</p>
             </header>
-            
+
             <main class="space-y-6">
                 <button id="btnAdminLogin" class="w-full bg-red-600 hover:bg-red-700 text-white font-bold py-4 px-6 rounded-lg shadow-lg text-lg transition-all">
                     Admin Login
@@ -1114,13 +1713,21 @@
             </main>
         </div>
 
-        <!-- VIEW: Admin Login -->
-        <div id="adminLoginView" class="hidden">
+        <!-- VIEW: Admin Login --><div id="adminLoginView" class="hidden">
             <header class="my-8">
+                <div class="flex items-center space-x-3 mb-4">
+                     <!-- FIX: Changed src to ./ups logo.png -->
+                    <img src="./ups logo.png" alt="Logo" class="w-10 h-10 rounded-full"
+                        onerror="this.onerror=null; this.src='https://placehold.co/40x40/FFFFFF/000000?text=Logo';">
+                    <div>
+                        <h2 class="text-lg font-semibold text-white">Udaya Public School</h2>
+                        <p class="text-sm text-gray-400">Annual Fest 2025-26</p>
+                    </div>
+                </div>
                 <button id="btnAdminLoginBack" class="text-blue-400 hover:text-blue-300">&larr; Back to Home</button>
                 <h1 class="text-3xl font-bold text-center text-red-400 mt-4">Admin Login</h1>
             </header>
-            
+
             <main class="space-y-4 bg-gray-800 p-6 rounded-lg shadow-xl">
                 <div>
                     <label for="adminPassword" class="block text-sm font-medium text-gray-300 mb-1">Password</label>
@@ -1129,47 +1736,79 @@
                 <button id="btnAdminLoginSubmit" class="w-full bg-red-600 hover:bg-red-700 text-white font-bold py-3 px-4 rounded-lg shadow-lg transition-all">
                     Login
                 </button>
+                <button id="btnAdminResetPassword" type="button" class="w-full text-center text-xs text-gray-400 hover:text-white mt-4">
+                    Forgot Password? Reset to default
+                </button>
             </main>
         </div>
 
-        <!-- VIEW: Admin Dashboard -->
-        <div id="adminDashboardView" class="hidden">
+        <!-- VIEW: Admin Dashboard --><div id="adminDashboardView" class="hidden">
             <header class="my-8 flex justify-between items-center">
-                <h1 class="text-3xl font-bold text-red-400">Admin Dashboard</h1>
-                <button id="btnAdminLogout" class="bg-gray-700 hover:bg-gray-600 text-white font-medium py-2 px-4 rounded-lg text-sm transition-all">Logout</button>
+                <div class="flex items-center space-x-3">
+                     <!-- FIX: Changed src to ./ups logo.png -->
+                    <img src="./ups logo.png" alt="Logo" class="w-12 h-12 rounded-full"
+                        onerror="this.onerror=null; this.src='https://placehold.co/48x48/FFFFFF/000000?text=Logo';">
+                    <div>
+                        <h1 class="text-3xl font-bold text-red-400">Admin Dashboard</h1>
+                        <p class="text-sm text-gray-400">Udaya Public School</p>
+                    </div>
+                </div>
+                <button id="btnAdminLogout" class="bg-gray-700 hover:bg-gray-600 text-white font-medium py-2 px-4 rounded-lg text-sm transition-all self-start">Logout</button>
             </header>
-            
-            <!-- Admin Tabs -->
-            <div class="mb-4 border-b border-gray-700">
+
+            <!-- Admin Tabs --><div class="mb-4 border-b border-gray-700">
                 <nav class="flex space-x-1" aria-label="Tabs">
-                    <button data-target="panel-users" class="admin-tab bg-blue-600 text-white px-4 py-3 rounded-t-lg font-medium text-sm">Manage Users</button>
-                    <button data-target="panel-stalls" class="admin-tab bg-gray-700 text-gray-300 px-4 py-3 rounded-t-lg font-medium text-sm">Manage Stalls</button>
+                    <button data-target="panel-students" class="admin-tab bg-blue-600 text-white px-4 py-3 rounded-t-lg font-medium text-sm">Students</button>
+                    <button data-target="panel-stalls" class="admin-tab bg-gray-700 text-gray-300 px-4 py-3 rounded-t-lg font-medium text-sm">Stalls</button>
+                    <button data-target="panel-classes" class="admin-tab bg-gray-700 text-gray-300 px-4 py-3 rounded-t-lg font-medium text-sm">Classes</button>
                     <button data-target="panel-reports" class="admin-tab bg-gray-700 text-gray-300 px-4 py-3 rounded-t-lg font-medium text-sm">Reports</button>
                 </nav>
             </div>
-            
+
             <main class="space-y-6">
-                <!-- Panel 1: Manage Users (Students & Stalls) -->
-                <div id="panel-users" class="admin-tab-panel space-y-6">
-                    <!-- Generate Student -->
-                    <section class="bg-gray-800 p-6 rounded-lg shadow-xl">
+                <!-- Panel 1: Manage Students --><div id="panel-students" class="admin-tab-panel space-y-6">
+                    <!-- Generate Student --><section class="bg-gray-800 p-6 rounded-lg shadow-xl">
                         <h2 class="text-2xl font-semibold mb-4 text-blue-300">Generate Student</h2>
                         <div class="space-y-4">
                             <input type="text" id="adminStudentName" class="w-full bg-gray-700 text-white border border-gray-600 rounded-lg p-3" placeholder="Student Name">
+                            <input type="text" id="adminStudentClass" class="w-full bg-gray-700 text-white border border-gray-600 rounded-lg p-3" placeholder="Student Class (e.g., 10-B)">
                             <button id="btnAdminGenerateStudent" class="w-full bg-blue-600 hover:bg-blue-700 text-white font-bold py-3 px-4 rounded-lg shadow-lg transition-all">
                                 Generate Student QR
                             </button>
                             <div id="adminStudentQRContainer" class="bg-white p-4 rounded-lg text-black text-center mt-4">
-                                <!-- QR code will appear here -->
-                            </div>
+                                <!-- QR code will appear here --></div>
+
+                            <button id="btnAdminRechargeStudent" class="w-full bg-green-600 hover:bg-green-700 text-white font-bold py-3 px-4 rounded-lg shadow-lg transition-all mt-4">
+                                Recharge Student (Scan QR)
+                            </button>
+
                             <h3 class="text-xl font-semibold mt-6 mb-2">Current Students</h3>
                             <div id="adminStudentList" class="space-y-2 max-h-60 overflow-y-auto">
-                                <!-- Student list loads here -->
-                            </div>
+                                <!-- Student list loads here --></div>
                         </div>
                     </section>
-                    
-                    <!-- Generate Stall -->
+
+                    <section class="bg-gray-800 p-6 rounded-lg shadow-xl">
+                        <h2 class="text-2xl font-semibold mb-4 text-yellow-300">Find Student QR by Class</h2>
+                        <div class="space-y-4">
+                            <div>
+                                <label class="block text-sm font-medium text-gray-300 mb-1">Select Class</label>
+                                <select id="adminSearchClassSelect" class="w-full bg-gray-700 text-white border border-gray-600 rounded-lg p-3">
+                                    <option value="">Select a Class</option>
+                                    <!-- Classes will be populated here --></select>
+                            </div>
+
+                            <div id="adminStudentListByClass" class="space-y-2 max-h-60 overflow-y-auto">
+                                <!-- Student list will appear here --></div>
+
+                            <div id="adminSearchQRContainer" class="bg-white p-4 rounded-lg text-black text-center mt-4 hidden">
+                                <!-- Search result QR will appear here --></div>
+                        </div>
+                    </section>
+                </div>
+
+                <!-- Panel 2: Manage Stalls (Menus) --><div id="panel-stalls" class="admin-tab-panel hidden space-y-6">
+
                     <section class="bg-gray-800 p-6 rounded-lg shadow-xl">
                         <h2 class="text-2xl font-semibold mb-4 text-green-300">Generate Stall</h2>
                         <div class="space-y-4">
@@ -1178,14 +1817,20 @@
                                 Generate Stall QR
                             </button>
                             <div id="adminStallQRContainer" class="bg-white p-4 rounded-lg text-black text-center mt-4">
-                                <!-- QR code will appear here -->
-                            </div>
+                                <!-- QR code will appear here --></div>
                         </div>
                     </section>
-                </div>
-                
-                <!-- Panel 2: Manage Stalls (Menus) -->
-                <div id="panel-stalls" class="admin-tab-panel hidden space-y-6">
+                    <section class="bg-gray-800 p-6 rounded-lg shadow-xl">
+                        <h2 class="text-2xl font-semibold mb-4 text-yellow-300">Find Stall QR</h2>
+                        <div class="space-y-4">
+                            <input type="text" id="adminSearchStallName" class="w-full bg-gray-700 text-white border border-gray-600 rounded-lg p-3" placeholder="Enter Full Stall Name">
+                            <button id="btnAdminSearchStall" class="w-full bg-yellow-600 hover:bg-yellow-700 text-white font-bold py-3 px-4 rounded-lg shadow-lg transition-all">
+                                Search
+                            </button>
+                            <div id="adminSearchStallQRContainer" class="bg-white p-4 rounded-lg text-black text-center mt-4 hidden">
+                                <!-- Search result QR will appear here --></div>
+                        </div>
+                    </section>
                     <section class="bg-gray-800 p-6 rounded-lg shadow-xl">
                         <h2 class="text-2xl font-semibold mb-4 text-green-300">Add Menu Item</h2>
                         <div class="space-y-4">
@@ -1200,17 +1845,33 @@
                             </button>
                         </div>
                     </section>
-                    
+
                     <section>
-                        <h2 class="text-2xl font-semibold mb-4">Stall Menus</h2>
-                        <div id="adminStallList" class="space-y-4">
-                            <!-- Stall menus load here -->
-                        </div>
+                        <h2 class="text-2xl font-semibold mb-4">Current Stalls & Menus</h2>
+                        <div id="adminStallMenuList" class="space-y-4">
+                            <!-- Stall menus load here --></div>
                     </section>
                 </div>
-                
-                <!-- Panel 3: Reports -->
-                <div id="panel-reports" class="admin-tab-panel hidden space-y-6">
+
+                <!-- Panel 3: Manage Classes --><div id="panel-classes" class="admin-tab-panel hidden space-y-6">
+                    <section class="bg-gray-800 p-6 rounded-lg shadow-xl">
+                        <h2 class="text-2xl font-semibold mb-4 text-purple-300">Add New Class</h2>
+                        <div class="space-y-4">
+                            <input type="text" id="adminClassName" class="w-full bg-gray-700 text-white border border-gray-600 rounded-lg p-3" placeholder="Class Name (e.g., 10-A, 12-C)">
+                            <button id="btnAdminAddClass" class="w-full bg-purple-600 hover:bg-purple-700 text-white font-bold py-3 px-4 rounded-lg shadow-lg transition-all">
+                                Add Class
+                            </button>
+                        </div>
+                    </section>
+
+                    <section>
+                        <h2 class="text-2xl font-semibold mb-4">Current Classes</h2>
+                        <div id="adminClassList" class="space-y-3">
+                            <!-- Class list loads here --></div>
+                    </section>
+                </div>
+
+                <!-- Panel 4: Reports --><div id="panel-reports" class="admin-tab-panel hidden space-y-6">
                     <section class="bg-gray-800 p-6 rounded-lg shadow-xl space-y-4">
                         <h2 class="text-2xl font-semibold mb-4 text-yellow-300">Event Financials</h2>
                         <div class="flex justify-between bg-gray-700 p-4 rounded-lg">
@@ -1221,31 +1882,65 @@
                             <span class="text-lg">Total Sales:</span>
                             <span id="adminTotalSales" class="text-lg font-bold text-red-400">₹0.00</span>
                         </div>
-                    </section>
-                    
-                    <section class="bg-gray-800 p-6 rounded-lg shadow-xl">
-                        <h3 class="text-xl font-semibold mb-2">Sales per Stall</h3>
-                        <div id="adminStallSalesSummary" class="space-y-2">
-                            <!-- Stall sales summary loads here -->
+                        <div class="flex justify-between bg-gray-700 p-4 rounded-lg">
+                            <span class="text-lg">Outstanding Balance:</span>
+                            <span id="adminOutstandingBalance" class="text-lg font-bold text-blue-400">₹0.00</span>
+                        </div>
+                        <div class="grid grid-cols-2 gap-4">
+                            <div class="bg-gray-700 p-4 rounded-lg text-center">
+                                <span class="text-sm text-gray-400">Total Transactions</span>
+                                <span id="adminTotalTransactions" class="text-2xl font-bold block">0</span>
+                            </div>
+                            <div class="bg-gray-700 p-4 rounded-lg text-center">
+                                <span class="text-sm text-gray-400">Avg. Purchase</span>
+                                <span id="adminAvgPurchaseValue" class="text-2xl font-bold block">₹0.00</span>
+                            </div>
                         </div>
                     </section>
-                    
+
+                    <section class="bg-gray-800 p-6 rounded-lg shadow-xl">
+                        <h3 class="text-xl font-semibold mb-2">Sales per Stall</h3>
+                        <div id="adminStallSalesSummary" class="space-y-2 max-h-60 overflow-y-auto">
+                            <!-- Stall sales summary loads here --></div>
+                    </section>
+
+                    <section class="bg-gray-800 p-6 rounded-lg shadow-xl">
+                        <h3 class="text-xl font-semibold mb-2">Top-Selling Items</h3>
+                        <div id="adminTopItemsList" class="space-y-2 max-h-60 overflow-y-auto">
+                            <!-- Top items load here --></div>
+                    </section>
+                    <section class="bg-gray-800 p-6 rounded-lg shadow-xl">
+                        <h3 class="text-xl font-semibold mb-2">Total Spending by Class</h3>
+                        <div id="adminClassSpendingSummary" class="space-y-2 max-h-60 overflow-y-auto">
+                            <!-- Class spending loads here --></div>
+                    </section>
+
                     <section>
                         <h2 class="text-2xl font-semibold mb-4">All Transactions</h2>
                         <div id="adminTransactionList" class="space-y-3 max-h-96 overflow-y-auto">
-                            <!-- Transaction list loads here -->
-                        </div>
+                            <!-- Transaction list loads here --></div>
+                        <button id="btnExportCSV" class="w-full bg-blue-600 hover:bg-blue-700 text-white font-bold py-3 px-4 rounded-lg shadow-lg transition-all mt-4">
+                            Export All Transactions to CSV
+                        </button>
                     </section>
                 </div>
             </main>
         </div>
 
-        <!-- VIEW: Scanner -->
-        <div id="scannerView" class="hidden">
+        <!-- VIEW: Scanner --><div id="scannerView" class="hidden">
             <header class="my-8">
+                <div class="flex items-center space-x-3 mb-4">
+                     <!-- FIX: Changed src to ./ups logo.png -->
+                    <img src="./ups logo.png" alt="Logo" class="w-10 h-10 rounded-full"
+                        onerror="this.onerror=null; this.src='https://placehold.co/40x40/FFFFFF/000000?text=Logo';">
+                    <div>
+                        <h2 class="text-lg font-semibold text-white">Udaya Public School</h2>
+                        <p class="text-sm text-gray-400">Annual Fest 2025-26</p>
+                    </div>
+                </div>
                 <h1 id="scannerTitle" class="text-3xl font-bold text-center text-yellow-300">Scan QR Code</h1>
             </header>
-            
+
             <main class="space-y-4">
                 <div id="qr-reader" class="w-full rounded-lg overflow-hidden border-4 border-gray-700"></div>
                 <button id="btnCancelScan" class="w-full bg-gray-700 hover:bg-gray-600 text-white font-bold py-3 px-4 rounded-lg shadow-lg transition-all">
@@ -1254,126 +1949,114 @@
             </main>
         </div>
 
-        <!-- VIEW: Student Dashboard -->
-        <div id="studentDashboardView" class="hidden">
+        <!-- VIEW: Student Dashboard --><div id="studentDashboardView" class="hidden">
             <header class="my-8">
                 <button id="btnStudentBack" class="text-blue-400 hover:text-blue-300 mb-4">&larr; Back to Home (Logout)</button>
-                <div class="flex justify-between items-center">
-                    <div>
-                        <h1 class="text-3xl font-bold text-blue-400">Welcome, <span id="studentName"></span></h1>
-                        <p id="studentIdDisplay" class="text-sm text-gray-400"></p>
-                        <p class="text-lg text-gray-300 mt-4">Your Balance:</p>
-                        <p id="studentBalance" class="text-5xl font-extrabold text-green-400">₹0.00</p>
+                <div class="flex justify-between items-start">
+                    <div class="flex items-center space-x-3">
+                         <!-- FIX: Changed src to ./ups logo.png -->
+                         <img src="./ups logo.png" alt="Logo" class="w-12 h-12 rounded-full"
+                            onerror="this.onerror=null; this.src='https://placehold.co/48x48/FFFFFF/000000?text=Logo';">
+                        <div>
+                            <h1 class="text-3xl font-bold text-blue-400">Welcome, <span id="studentName"></span></h1>
+                            <p class="text-sm text-gray-400">Udaya Public School</p>
+                        </div>
                     </div>
-                    <button id="btnStudentLogout" class="bg-gray-700 hover:bg-gray-600 text-white font-medium py-2 px-4 rounded-lg text-sm transition-all self-start">Logout</button>
+                    <button id="btnStudentLogout" class="bg-gray-700 hover:bg-gray-600 text-white font-medium py-2 px-4 rounded-lg text-sm transition-all self-start flex-shrink-0">Logout</button>
+                </div>
+                <div class="mt-4">
+                    <p id="studentIdDisplay" class="text-sm text-gray-400"></p>
+                    <p class="text-lg text-gray-300 mt-4">Your Balance:</p>
+                    <p id="studentBalance" class="text-5xl font-extrabold text-green-400">₹0.00</p>
                 </div>
             </header>
-            
+
             <main class="space-y-8">
-                <!-- Recharge -->
-                <section class="bg-gray-800 p-6 rounded-lg shadow-xl space-y-4">
+                <!-- Recharge --><section class="bg-gray-800 p-6 rounded-lg shadow-xl space-y-4">
                     <h2 class="text-2xl font-semibold mb-4 text-green-300">Recharge Wallet</h2>
                     <input type="number" id="studentRechargeAmount" class="w-full bg-gray-700 text-white border border-gray-600 rounded-lg p-3" placeholder="Enter Amount (e.g., 500)">
                     <button id="btnStudentRecharge" class="w-full bg-green-600 hover:bg-green-700 text-white font-bold py-3 px-4 rounded-lg shadow-lg transition-all">
                         Go to Payment
                     </button>
                 </section>
-                
-                <!-- Stalls & Prices -->
-                <section>
+
+                <!-- Stalls & Prices --><section>
                     <h2 class="text-2xl font-semibold mb-4">Stalls & Prices</h2>
                     <div id="studentStallList" class="space-y-4">
-                        <!-- Stall list loads here -->
-                    </div>
+                        <!-- Stall list loads here --></div>
                 </section>
-                
-                <!-- Transaction History -->
-                <section>
+
+                <!-- Transaction History --><section>
                     <h2 class="text-2xl font-semibold mb-4">Transaction History</h2>
                     <div id="studentTransactionList" class="space-y-3 max-h-96 overflow-y-auto">
-                        <!-- History loads here -->
-                    </div>
+                        <!-- History loads here --></div>
                 </section>
             </main>
         </div>
-        
-        <!-- VIEW: Recharge (Mock UPI) -->
-        <div id="rechargeView" class="hidden">
-            <header class="my-8">
-                <button id="btnRechargeBack" class="text-blue-400 hover:text-blue-300 mb-4">&larr; Back to Dashboard</button>
-                <h1 class="text-3xl font-bold text-center text-yellow-300 mt-4">Mock UPI Payment</h1>
-            </header>
-            
-            <main class="space-y-6 bg-gray-800 p-8 rounded-lg shadow-xl text-center">
-                <p class="text-lg text-gray-300">You are about to pay:</p>
-                <p id="rechargeAmountDisplay" class="text-6xl font-extrabold text-white">₹0.00</p>
-                <p class="text-sm text-gray-400">This is a mock payment screen. Click "Successful" to add funds to your wallet.</p>
-                
-                <button id="btnPaymentSuccess" class="w-full bg-green-600 hover:bg-green-700 text-white font-bold py-4 px-6 rounded-lg shadow-lg text-lg transition-all">
-                    Payment Successful
-                </button>
-                <button id="btnPaymentFail" class="w-full bg-red-600 hover:bg-red-700 text-white font-bold py-3 px-4 rounded-lg shadow-lg transition-all">
-                    Payment Failed
-                </button>
-            </main>
-        </div>
 
-        <!-- VIEW: Stall Dashboard -->
-        <div id="stallDashboardView" class="hidden">
+        <!-- VIEW: Stall Dashboard --><div id="stallDashboardView" class="hidden">
             <header class="my-8">
                 <button id="btnStallBack" class="text-blue-400 hover:text-blue-300 mb-4">&larr; Back to Home (Logout)</button>
-                <div class="flex justify-between items-center">
-                    <div>
-                        <h1 class="text-3xl font-bold text-green-400"><span id="stallName"></span></h1>
-                        <p class="text-lg text-gray-300">Total Sales:</p>
-                        <p id="stallTotalSales" class="text-5xl font-extrabold text-white">₹0.00</p>
+                <div class="flex justify-between items-start">
+                    <div class="flex items-center space-x-3">
+                         <!-- FIX: Changed src to ./ups logo.png -->
+                        <img src="./ups logo.png" alt="Logo" class="w-12 h-12 rounded-full"
+                           onerror="this.onerror=null; this.src='https://placehold.co/48x48/FFFFFF/000000?text=Logo';">
+                        <div>
+                            <h1 class="text-3xl font-bold text-green-400"><span id="stallName"></span></h1>
+                            <p class="text-sm text-gray-400">Udaya Public School</p>
+                        </div>
                     </div>
-                    <button id="btnStallLogout" class="bg-gray-700 hover:bg-gray-600 text-white font-medium py-2 px-4 rounded-lg text-sm transition-all self-start">Logout</button>
-
+                    <button id="btnStallLogout" class="bg-gray-700 hover:bg-gray-600 text-white font-medium py-2 px-4 rounded-lg text-sm transition-all self-start flex-shrink-0">Logout</button>
+                </div>
+                <div class="mt-4">
+                    <p class="text-lg text-gray-300">Total Sales:</p>
+                    <p id="stallTotalSales" class="text-5xl font-extrabold text-white">₹0.00</p>
                 </div>
             </header>
-            
+
             <main class="space-y-8">
-                <!-- Scan Button -->
-                <section>
+                <!-- Scan Button --><section>
                     <button id="btnStallScanToPay" class="w-full bg-blue-600 hover:bg-blue-700 text-white font-bold py-6 px-6 rounded-lg shadow-lg text-2xl transition-all">
                         Scan Student QR to Pay
                     </button>
                 </section>
-                
-                <!-- My Menu -->
-                <section class="bg-gray-800 p-6 rounded-lg shadow-xl">
+
+                <!-- My Menu --><section class="bg-gray-800 p-6 rounded-lg shadow-xl">
                     <h2 class="text-2xl font-semibold mb-4">My Menu</h2>
                     <div id="stallMenuList" class="space-y-2">
-                        <!-- My menu loads here -->
-                    </div>
+                        <!-- My menu loads here --></div>
                 </section>
-                
-                <!-- Sales History -->
-                <section>
+
+                <!-- Sales History --><section>
                     <h2 class="text-2xl font-semibold mb-4">Sales History</h2>
                     <div id="stallSaleList" class="space-y-3 max-h-96 overflow-y-auto">
-                        <!-- Sales history loads here -->
-                    </div>
+                        <!-- Sales history loads here --></div>
                 </section>
             </main>
         </div>
-        
-        <!-- VIEW: Stall Payment -->
-        <div id="stallPaymentView" class="hidden">
+
+        <!-- VIEW: Stall Payment --><div id="stallPaymentView" class="hidden">
             <header class="my-8">
+                <div class="flex items-center space-x-3 mb-4">
+                     <!-- FIX: Changed src to ./ups logo.png -->
+                    <img src="./ups logo.png" alt="Logo" class="w-10 h-10 rounded-full"
+                        onerror="this.onerror=null; this.src='https://placehold.co/40x40/FFFFFF/000000?text=Logo';">
+                    <div>
+                        <h2 class="text-lg font-semibold text-white">Udaya Public School</h2>
+                        <p class="text-sm text-gray-400">Annual Fest 2025-26</p>
+                    </div>
+                </div>
                 <h1 class="text-3xl font-bold text-center text-blue-400">Process Payment</h1>
             </header>
-            
+
             <main class="space-y-6">
-                <!-- Scanner Section -->
-                <div id="stall-qr-reader-container">
+                <!-- Scanner Section --><div id="stall-qr-reader-container">
                     <p class="text-center text-lg text-yellow-300 mb-4">Scanning for Student QR...</p>
                     <div id="stall-qr-reader" class="w-full rounded-lg overflow-hidden border-4 border-gray-700"></div>
                 </div>
-                
-                <!-- Payment Details Section (hidden initially) -->
-                <div id="stallPaymentDetails" class="hidden space-y-6">
+
+                <!-- Payment Details Section (hidden initially) --><div id="stallPaymentDetails" class="hidden space-y-6">
                     <section class="bg-gray-800 p-6 rounded-lg shadow-xl">
                         <h2 class="text-2xl font-semibold mb-2">Student Details</h2>
                         <div class="flex justify-between items-center">
@@ -1381,22 +2064,20 @@
                             <span id="stallPaymentStudentBalance" class="text-xl font-bold text-green-400"></span>
                         </div>
                     </section>
-                    
+
                     <section class="bg-gray-800 p-6 rounded-lg shadow-xl">
                         <h2 class="text-2xl font-semibold mb-4">Create Order</h2>
                         <div id="stallCart" class="space-y-4">
-                            <!-- Cart UI builds here -->
-                        </div>
+                            <!-- Cart UI builds here --></div>
                     </section>
-                    
+
                     <section class="text-center">
                         <p class="text-lg text-gray-300">Total Amount:</p>
                         <p id="stallCartTotal" class="text-6xl font-extrabold text-green-400">₹0.00</p>
                     </section>
                 </div>
-                
-                <!-- Action Buttons -->
-                <button id="btnStallConfirmPayment" class="hidden w-full bg-green-600 hover:bg-green-700 text-white font-bold py-4 px-6 rounded-lg shadow-lg text-lg transition-all">
+
+                <!-- Action Buttons --><button id="btnStallConfirmPayment" class="hidden w-full bg-green-600 hover:bg-green-700 text-white font-bold py-4 px-6 rounded-lg shadow-lg text-lg transition-all">
                     Confirm Payment
                 </button>
                 <button id="btnStallPaymentCancel" class="w-full bg-gray-700 hover:bg-gray-600 text-white font-bold py-3 px-4 rounded-lg shadow-lg transition-all">
@@ -1405,14 +2086,56 @@
             </main>
         </div>
 
-        <!-- VIEW: Loading Overlay -->
-        <div id="loadingView" class="hidden fixed inset-0 bg-black bg-opacity-75 flex flex-col items-center justify-center z-50">
+        <!-- VIEW: Admin Recharge --><div id="adminRechargeView" class="hidden">
+            <header class="my-8">
+                <div class="flex items-center space-x-3 mb-4">
+                     <!-- FIX: Changed src to ./ups logo.png -->
+                    <img src="./ups logo.png" alt="Logo" class="w-10 h-10 rounded-full"
+                        onerror="this.onerror=null; this.src='https://placehold.co/40x40/FFFFFF/000000?text=Logo';">
+                    <div>
+                        <h2 class="text-lg font-semibold text-white">Udaya Public School</h2>
+                        <p class="text-sm text-gray-400">Annual Fest 2025-26</p>
+                    </div>
+                </div>
+                <h1 class="text-3xl font-bold text-center text-green-400">Recharge Student Wallet</h1>
+            </header>
+
+            <main class="space-y-6">
+                <!-- Scanner Section --><div id="admin-recharge-qr-reader-container">
+                    <p class="text-center text-lg text-yellow-300 mb-4">Scanning for Student QR...</p>
+                    <div id="admin-recharge-qr-reader" class="w-full rounded-lg overflow-hidden border-4 border-gray-700"></div>
+                </div>
+
+                <!-- Recharge Details Section (hidden initially) --><div id="adminRechargeDetails" class="hidden space-y-6">
+                    <section class="bg-gray-800 p-6 rounded-lg shadow-xl">
+                        <h2 class="text-2xl font-semibold mb-2">Student Details</h2>
+                        <div class="flex justify-between items-center">
+                            <span id="adminRechargeStudentName" class="text-xl"></span>
+                            <span id="adminRechargeStudentBalance" class="text-xl font-bold text-green-400"></span>
+                        </div>
+                    </section>
+
+                    <section class="bg-gray-800 p-6 rounded-lg shadow-xl">
+                        <h2 class="text-2xl font-semibold mb-4">Enter Amount</h2>
+                        <input type="number" id="adminRechargeAmount" class="w-full bg-gray-700 text-white border border-gray-600 rounded-lg p-3 text-2xl" placeholder="e.g., 500">
+                    </section>
+                </div>
+
+                <!-- Action Buttons --><button id="btnAdminConfirmRecharge" class="hidden w-full bg-green-600 hover:bg-green-700 text-white font-bold py-4 px-6 rounded-lg shadow-lg text-lg transition-all">
+                    Confirm Recharge
+                </button>
+                <button id="btnAdminRechargeCancel" class="w-full bg-gray-700 hover:bg-gray-600 text-white font-bold py-3 px-4 rounded-lg shadow-lg transition-all">
+                    Cancel
+                </button>
+            </main>
+        </div>
+
+        <!-- VIEW: Loading Overlay --><div id="loadingView" class="hidden fixed inset-0 bg-black bg-opacity-75 flex flex-col items-center justify-center z-50">
             <div class="spinner w-16 h-16 border-4 border-gray-600 rounded-full"></div>
             <p id="loadingMessage" class="text-white text-xl mt-4">Loading...</p>
         </div>
 
-        <!-- Modal (Alert) -->
-        <div id="modal" class="hidden fixed inset-0 bg-black bg-opacity-75 flex items-center justify-center z-50 p-4">
+        <!-- Modal (Alert) --><div id="modal" class="hidden fixed inset-0 bg-black bg-opacity-75 flex items-center justify-center z-50 p-4">
             <div class="bg-white text-black p-6 rounded-lg shadow-xl max-w-sm w-full">
                 <p id="modalMessage" class="text-lg mb-4">This is an alert message.</p>
                 <button id="modalButton" class="w-full bg-blue-600 hover:bg-blue-700 text-white font-bold py-2 px-4 rounded-lg">
@@ -1421,6 +2144,24 @@
             </div>
         </div>
 
-    </div>
-</body>
+        <!-- Modal (Confirm) --><div id="confirmModal" class="hidden fixed inset-0 bg-black bg-opacity-75 flex items-center justify-center z-50 p-4">
+            <div class="bg-white text-black p-6 rounded-lg shadow-xl max-w-sm w-full">
+                <p id="confirmModalMessage" class="text-lg mb-6">Are you sure?</p>
+                <div class="flex space-x-4">
+                    <button id="btnConfirmNo" class="w-full bg-gray-600 hover:bg-gray-700 text-white font-bold py-2 px-4 rounded-lg">
+                        Cancel
+                    </button>
+                    <button id="btnConfirmYes" class="w-full bg-red-600 hover:bg-red-700 text-white font-bold py-2 px-4 rounded-lg">
+                        Yes
+                    </button>
+                </div>
+            </div>
+        </div>
+
+        <!-- Global Footer --><footer class="text-center w-full mt-12 mb-4 text-gray-500 text-xs">
+            <p class="font-semibold">Udaya Public School</p>
+            <p>Mahadev Jharkhandi, Kunraghat, Gorakhpur</p>
+        </footer>
+    </div> <!-- End Main Container --></body>
 </html>
+
