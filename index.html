@@ -141,16 +141,41 @@
 
         async function initFirebase() {
             try {
-                // Use the provided __firebase_config
-                if (typeof __firebase_config === 'undefined' || !__firebase_config) {
-                    showAlert("SETUP REQUIRED: Firebase configuration is missing. This app cannot run without it.");
-                    console.error("Firebase config (__firebase_config) is not set.");
+                // --- PASTE YOUR FIREBASE CONFIG HERE ---
+                // If you are running this on GitHub or locally, uncomment and paste your Firebase config object here.
+                // You can get this from your Firebase project console:
+                // Project Settings > General > Your apps > Web app > Firebase SDK snippet > Config
+                
+                const firebaseConfig = {
+                 apiKey: "AIzaSyCsuWEjnrYr1g7ruvZ60ur6TADzbHkJpno",
+                 authDomain: "qr-wallet-2ef48.firebaseapp.com",
+                 projectId: "qr-wallet-2ef48",
+                 storageBucket: "qr-wallet-2ef48.firebasestorage.app",
+                 messagingSenderId: "755057942199",
+                 appId: "1:755057942199:web:f5fa763b08534bcf1f3732",
+                 measurementId: "G-NSLXTCC8JM"
+                };
+                
+                // ----------------------------------------
+
+
+                // Use the provided __firebase_config if in the Canvas environment, otherwise, use the config above.
+                let effectiveConfig;
+                if (typeof __firebase_config !== 'undefined' && __firebase_config) {
+                    console.log("Using environment-provided Firebase config.");
+                    effectiveConfig = JSON.parse(__firebase_config);
+                } else if (typeof firebaseConfig !== 'undefined') {
+                    console.log("Using user-provided Firebase config.");
+                    effectiveConfig = firebaseConfig; // Use the pasted config
+                } else {
+                    showAlert("SETUP REQUIRED: Firebase configuration is missing. Please edit index.html, find the `initFirebase` function, and paste your `firebaseConfig` object.");
+                    console.error("Firebase config is not set.");
                     return;
                 }
-                const firebaseConfig = JSON.parse(__firebase_config);
+
 
                 // 2. Initialize Firebase
-                const app = initializeApp(firebaseConfig);
+                const app = initializeApp(effectiveConfig);
                 db = getFirestore(app);
                 auth = getAuth(app);
                 analytics = getAnalytics(app);
@@ -237,9 +262,9 @@
                 confirmModalMessage.textContent = message;
                 confirmCallback = onYesCallback;
                 confirmModal.classList.remove('hidden');
-            } else {
-                console.error("Confirm modal elements not found for showConfirm:", message);
-            }
+             } else {
+                 console.error("Confirm modal elements not found for showConfirm:", message);
+             }
         }
 
         function cleanupListeners() {
@@ -1693,9 +1718,7 @@
 
         <!-- VIEW: Home --><div id="homeView" class="">
             <header class="text-center my-12">
-                 <!-- FIX: Changed src to ./ups logo.png -->
-                <img src="./ups logo.png" alt="Udaya Public School Logo" class="w-24 h-24 mx-auto mb-4"
-                    onerror="this.onerror=null; this.src='https://placehold.co/100x100/FFFFFF/000000?text=Logo';">
+                
                 <h1 class="text-4xl font-bold text-blue-400 mb-2">Smart QR Event Wallet</h1>
                 <p class="text-lg text-gray-300">Udaya Public School - Annual Fest 2025-26</p>
             </header>
@@ -1716,9 +1739,7 @@
         <!-- VIEW: Admin Login --><div id="adminLoginView" class="hidden">
             <header class="my-8">
                 <div class="flex items-center space-x-3 mb-4">
-                     <!-- FIX: Changed src to ./ups logo.png -->
-                    <img src="./ups logo.png" alt="Logo" class="w-10 h-10 rounded-full"
-                        onerror="this.onerror=null; this.src='https://placehold.co/40x40/FFFFFF/000000?text=Logo';">
+                        
                     <div>
                         <h2 class="text-lg font-semibold text-white">Udaya Public School</h2>
                         <p class="text-sm text-gray-400">Annual Fest 2025-26</p>
@@ -1745,9 +1766,7 @@
         <!-- VIEW: Admin Dashboard --><div id="adminDashboardView" class="hidden">
             <header class="my-8 flex justify-between items-center">
                 <div class="flex items-center space-x-3">
-                     <!-- FIX: Changed src to ./ups logo.png -->
-                    <img src="./ups logo.png" alt="Logo" class="w-12 h-12 rounded-full"
-                        onerror="this.onerror=null; this.src='https://placehold.co/48x48/FFFFFF/000000?text=Logo';">
+                        
                     <div>
                         <h1 class="text-3xl font-bold text-red-400">Admin Dashboard</h1>
                         <p class="text-sm text-gray-400">Udaya Public School</p>
@@ -1930,9 +1949,7 @@
         <!-- VIEW: Scanner --><div id="scannerView" class="hidden">
             <header class="my-8">
                 <div class="flex items-center space-x-3 mb-4">
-                     <!-- FIX: Changed src to ./ups logo.png -->
-                    <img src="./ups logo.png" alt="Logo" class="w-10 h-10 rounded-full"
-                        onerror="this.onerror=null; this.src='https://placehold.co/40x40/FFFFFF/000000?text=Logo';">
+                        
                     <div>
                         <h2 class="text-lg font-semibold text-white">Udaya Public School</h2>
                         <p class="text-sm text-gray-400">Annual Fest 2025-26</p>
@@ -1954,9 +1971,7 @@
                 <button id="btnStudentBack" class="text-blue-400 hover:text-blue-300 mb-4">&larr; Back to Home (Logout)</button>
                 <div class="flex justify-between items-start">
                     <div class="flex items-center space-x-3">
-                         <!-- FIX: Changed src to ./ups logo.png -->
-                         <img src="./ups logo.png" alt="Logo" class="w-12 h-12 rounded-full"
-                            onerror="this.onerror=null; this.src='https://placehold.co/48x48/FFFFFF/000000?text=Logo';">
+                            
                         <div>
                             <h1 class="text-3xl font-bold text-blue-400">Welcome, <span id="studentName"></span></h1>
                             <p class="text-sm text-gray-400">Udaya Public School</p>
@@ -1999,9 +2014,7 @@
                 <button id="btnStallBack" class="text-blue-400 hover:text-blue-300 mb-4">&larr; Back to Home (Logout)</button>
                 <div class="flex justify-between items-start">
                     <div class="flex items-center space-x-3">
-                         <!-- FIX: Changed src to ./ups logo.png -->
-                        <img src="./ups logo.png" alt="Logo" class="w-12 h-12 rounded-full"
-                           onerror="this.onerror=null; this.src='https://placehold.co/48x48/FFFFFF/000000?text=Logo';">
+                            
                         <div>
                             <h1 class="text-3xl font-bold text-green-400"><span id="stallName"></span></h1>
                             <p class="text-sm text-gray-400">Udaya Public School</p>
@@ -2039,9 +2052,7 @@
         <!-- VIEW: Stall Payment --><div id="stallPaymentView" class="hidden">
             <header class="my-8">
                 <div class="flex items-center space-x-3 mb-4">
-                     <!-- FIX: Changed src to ./ups logo.png -->
-                    <img src="./ups logo.png" alt="Logo" class="w-10 h-10 rounded-full"
-                        onerror="this.onerror=null; this.src='https://placehold.co/40x40/FFFFFF/000000?text=Logo';">
+                        
                     <div>
                         <h2 class="text-lg font-semibold text-white">Udaya Public School</h2>
                         <p class="text-sm text-gray-400">Annual Fest 2025-26</p>
@@ -2053,7 +2064,7 @@
             <main class="space-y-6">
                 <!-- Scanner Section --><div id="stall-qr-reader-container">
                     <p class="text-center text-lg text-yellow-300 mb-4">Scanning for Student QR...</p>
-                    <div id="stall-qr-reader" class="w-full rounded-lg overflow-hidden border-4 border-gray-700"></div>
+                    <div id="stall-qr-reader" class"w-full rounded-lg overflow-hidden border-4 border-gray-700"></div>
                 </div>
 
                 <!-- Payment Details Section (hidden initially) --><div id="stallPaymentDetails" class="hidden space-y-6">
@@ -2089,9 +2100,7 @@
         <!-- VIEW: Admin Recharge --><div id="adminRechargeView" class="hidden">
             <header class="my-8">
                 <div class="flex items-center space-x-3 mb-4">
-                     <!-- FIX: Changed src to ./ups logo.png -->
-                    <img src="./ups logo.png" alt="Logo" class="w-10 h-10 rounded-full"
-                        onerror="this.onerror=null; this.src='https://placehold.co/40x40/FFFFFF/000000?text=Logo';">
+                        
                     <div>
                         <h2 class="text-lg font-semibold text-white">Udaya Public School</h2>
                         <p class="text-sm text-gray-400">Annual Fest 2025-26</p>
@@ -2164,4 +2173,5 @@
         </footer>
     </div> <!-- End Main Container --></body>
 </html>
+
 
