@@ -48,7 +48,7 @@
         let adminRechargeQrScanner; // Admin's recharge scanner
         let currentUnsubscribes = []; // To detach listeners on logout
         let appState = {
-            currentUser: null, // { id, name, role, balance }
+            currentUser: null, // { id, name, role, balance, class }
             currentView: 'home',
             rechargeAmount: 0,
             scannedStudentId: null,
@@ -145,7 +145,6 @@
                 // If you are running this on GitHub or locally, uncomment and paste your Firebase config object here.
                 // You can get this from your Firebase project console:
                 // Project Settings > General > Your apps > Web app > Firebase SDK snippet > Config
-                
                 const firebaseConfig = {
                  apiKey: "AIzaSyCsuWEjnrYr1g7ruvZ60ur6TADzbHkJpno",
                  authDomain: "qr-wallet-2ef48.firebaseapp.com",
@@ -154,7 +153,8 @@
                  messagingSenderId: "755057942199",
                  appId: "1:755057942199:web:f5fa763b08534bcf1f3732",
                  measurementId: "G-NSLXTCC8JM"
-                };
+};
+
                 
                 // ----------------------------------------
 
@@ -552,26 +552,60 @@
             document.getElementById('btnExportCSV').onclick = exportTransactionsToCSV;
         }
 
+        // --- NEW/MODIFIED FUNCTION ---
+        // This function now renders a full entry pass for Admins
         function displayUserQR(containerElement, user) {
             containerElement.innerHTML = ''; // Clear it first
             containerElement.classList.remove('hidden'); // Ensure it's visible
 
-            // Add title
-            const titleEl = document.createElement('h3');
-            titleEl.className = "text-lg font-semibold mb-2";
-            if (user.role === 'student') {
-                titleEl.textContent = `${user.name} (${user.class || 'N/A'})`;
-            } else {
-                titleEl.textContent = user.name;
-            }
-            containerElement.appendChild(titleEl);
+            // Unique IDs for this specific pass instance
+            const passId = `printable-pass-${user.id}`;
+            const qrInnerId = `qr-code-inner-${user.id}`;
+            const printBtnId = `btnPrintPass-${user.id}`;
+            const downloadBtnId = `btnDownloadQR-${user.id}`;
 
-            // Create dedicated div for QR
-            const qrCodeDiv = document.createElement('div');
-            qrCodeDiv.className = "flex justify-center"; // Center the QR image
-            containerElement.appendChild(qrCodeDiv);
+            // Create the pass HTML
+            const passHTML = `
+                <!-- This is the pass itself -->
+                <div id="${passId}" class="printable-area bg-white text-black p-6 rounded-lg shadow-lg max-w-xs mx-auto border-4 border-blue-600">
+                    
+                    <!-- School Info -->
+                    <div class="text-center border-b pb-4 border-gray-300">
+                        <h3 class="text-xl font-bold text-gray-800">Udaya Public School</h3>
+                        <p class="text-xs text-gray-600">Mahadev Jharkhandi, Kunraghat, Gorakhpur</p>
+                    </div>
+                    
+                    <!-- Event Info -->
+                    <div class="my-4 text-center">
+                        <p class="text-sm font-medium text-gray-700">ANNUAL FEST 2025-26</p>
+                        <p class="text-2xl font-bold text-blue-600">ENTRY PASS</p>
+                        <p class="text-sm font-semibold text-gray-700">Date: 1-FEB-2026</p>
+                    </div>
+                    
+                    <!-- Student Info -->
+                    <div class="my-4 text-center">
+                        <p class="text-lg font-bold text-black">${user.name}</p>
+                        <p class="text-base text-gray-700">Class: ${user.class || 'N/A'}</p>
+                    </div>
+                    
+                    <!-- QR Code -->
+                    <div id="${qrInnerId}" class="flex justify-center p-4 bg-white rounded-lg">
+                        <!-- QR will be generated here -->
+                    </div>
+                    <p class="text-xs text-center break-all text-gray-500">${user.id}</p>
+                </div>
+
+                <!-- Action Buttons (for Admin view only) -->
+                <div class="flex space-x-2 mt-4 print-hide">
+                    <button id="${printBtnId}" class="w-full bg-blue-600 hover:bg-blue-700 text-white font-bold py-2 px-4 rounded-lg">Print Pass</button>
+                    <button id="${downloadBtnId}" class="w-full bg-gray-600 hover:bg-gray-700 text-white font-bold py-2 px-4 rounded-lg">Download QR</button>
+                </div>
+            `;
+            
+            containerElement.innerHTML = passHTML;
 
             // Generate QR in the dedicated div
+            const qrCodeDiv = document.getElementById(qrInnerId);
             new QRCode(qrCodeDiv, {
                 text: user.id, // The user's document ID
                 width: 200,
@@ -581,12 +615,49 @@
                 correctLevel: QRCode.CorrectLevel.H
             });
 
-            // Add text ID
-            const textEl = document.createElement('p');
-            textEl.className = "text-xs mt-2 break-all";
-            textEl.textContent = user.id;
-            containerElement.appendChild(textEl);
+            // Add listeners for the new buttons
+            document.getElementById(printBtnId).onclick = () => printPass(passId);
+            document.getElementById(downloadBtnId).onclick = () => downloadQR(qrInnerId, user.name);
         }
+
+        // --- NEW HELPER FUNCTIONS for Print/Download ---
+        function printPass(elementId) {
+            const passElement = document.getElementById(elementId);
+            if (!passElement) {
+                console.error('Could not find element to print:', elementId);
+                return;
+            }
+            
+            // Add a temporary class for the print CSS to target
+            passElement.classList.add('print-this-one');
+            window.print();
+            // Remove the class after the print dialog is handled
+            passElement.classList.remove('print-this-one');
+        }
+
+        function downloadQR(qrContainerId, studentName) {
+            try {
+                const qrContainer = document.getElementById(qrContainerId);
+                const qrImage = qrContainer.querySelector('img'); // qrcodejs creates an <img>
+                
+                if (!qrImage) {
+                    showAlert('Error: Could not find QR image to download.');
+                    return;
+                }
+
+                const link = document.createElement('a');
+                link.href = qrImage.src; // This is a base64 Data URL
+                link.download = `entry_pass_qr_${studentName.replace(/ /g, '_')}.png`;
+                document.body.appendChild(link);
+                link.click();
+                document.body.removeChild(link);
+            } catch (error) {
+                console.error('Download QR Error:', error);
+                showAlert('Could not download QR code.');
+            }
+        }
+        // --- END NEW HELPER FUNCTIONS ---
+
 
         async function searchStall() {
             const stallName = document.getElementById('adminSearchStallName').value;
@@ -611,11 +682,48 @@
 
                 // Display the first match
                 const stallUser = snapshot.docs[0].data();
-                displayUserQR(qrContainer, {
-                    id: stallUser.userId, // Use the stored userId (which is the doc id)
-                    name: stallUser.name,
-                    role: 'stall'
+                
+                // --- MODIFICATION ---
+                // We display the *stall's QR*, not an entry pass. The entry pass is for students.
+                // Re-using displayUserQR but it will *look* like an entry pass, which is fine.
+                // A stall QR is just a QR. Let's make a simpler display for stalls.
+                qrContainer.innerHTML = ''; // Clear it first
+                qrContainer.classList.remove('hidden'); // Ensure it's visible
+
+                const titleEl = document.createElement('h3');
+                titleEl.className = "text-lg font-semibold mb-2 text-black";
+                titleEl.textContent = stallUser.name;
+                qrContainer.appendChild(titleEl);
+
+                const qrCodeDiv = document.createElement('div');
+                qrCodeDiv.className = "flex justify-center";
+                qrContainer.appendChild(qrCodeDiv);
+
+                new QRCode(qrCodeDiv, {
+                    text: stallUser.userId,
+                    width: 200,
+                    height: 200,
+                    colorDark: "#000000",
+                    colorLight: "#ffffff",
+                    correctLevel: QRCode.CorrectLevel.H
                 });
+
+                const textEl = document.createElement('p');
+                textEl.className = "text-xs mt-2 break-all text-black";
+                textEl.textContent = stallUser.userId;
+                qrContainer.appendChild(textEl);
+                
+                // Add download button for stall QR
+                const downloadBtn = document.createElement('button');
+                downloadBtn.className = "w-full bg-blue-600 hover:bg-blue-700 text-white font-bold py-2 px-4 rounded-lg mt-4";
+                downloadBtn.textContent = "Download QR";
+                downloadBtn.onclick = () => downloadQR(qrCodeDiv, stallUser.name); // Re-use download func
+                qrContainer.appendChild(downloadBtn);
+                // Note: We need to give qrCodeDiv an ID for downloadQR to work
+                const qrInnerId = `qr-stall-${stallUser.userId}`;
+                qrCodeDiv.id = qrInnerId;
+                downloadBtn.onclick = () => downloadQR(qrInnerId, stallUser.name);
+                // --- END MODIFICATION ---
 
                 document.getElementById('adminSearchStallName').value = '';
                 hideLoading();
@@ -644,12 +752,14 @@
             const nameInputId = role === 'student' ? 'adminStudentName' : 'adminStallName';
             const name = document.getElementById(nameInputId).value;
             const qrContainerId = role === 'student' ? 'adminStudentQRContainer' : 'adminStallQRContainer';
+            const qrContainer = document.getElementById(qrContainerId);
 
             let studentClass = null;
             if (role === 'student') {
-                studentClass = document.getElementById('adminStudentClass').value;
+                // MODIFIED: Read from dropdown
+                studentClass = document.getElementById('adminStudentClassSelect').value;
                 if (!studentClass) {
-                    showAlert('Please enter a student class.');
+                    showAlert('Please select a student class.');
                     return;
                 }
             }
@@ -684,13 +794,53 @@
                     });
                 }
 
-                // 4. Generate QR Code
-                const qrContainer = document.getElementById(qrContainerId);
-                displayUserQR(qrContainer, { id: userId, name: name, class: studentClass, role: role });
+                // 4. Generate QR Code / Entry Pass
+                const userForQR = { id: userId, name: name, class: studentClass, role: role };
+                
+                if (role === 'student') {
+                    // Generate the full entry pass
+                    displayUserQR(qrContainer, userForQR);
+                } else {
+                    // Just generate a simple QR for the stall
+                    qrContainer.innerHTML = ''; // Clear it first
+                    qrContainer.classList.remove('hidden'); // Ensure it's visible
+
+                    const titleEl = document.createElement('h3');
+                    titleEl.className = "text-lg font-semibold mb-2 text-black";
+                    titleEl.textContent = userForQR.name;
+                    qrContainer.appendChild(titleEl);
+
+                    const qrCodeDiv = document.createElement('div');
+                    qrCodeDiv.className = "flex justify-center";
+                    qrCodeDiv.id = `qr-stall-gen-${userForQR.id}`; // Unique ID
+                    qrContainer.appendChild(qrCodeDiv);
+
+                    new QRCode(qrCodeDiv, {
+                        text: userForQR.id,
+                        width: 200,
+                        height: 200,
+                        colorDark: "#000000",
+                        colorLight: "#ffffff",
+                        correctLevel: QRCode.CorrectLevel.H
+                    });
+
+                    const textEl = document.createElement('p');
+                    textEl.className = "text-xs mt-2 break-all text-black";
+                    textEl.textContent = userForQR.id;
+                    qrContainer.appendChild(textEl);
+                    
+                    const downloadBtn = document.createElement('button');
+                    downloadBtn.className = "w-full bg-blue-600 hover:bg-blue-700 text-white font-bold py-2 px-4 rounded-lg mt-4";
+                    downloadBtn.textContent = "Download QR";
+                    downloadBtn.onclick = () => downloadQR(qrCodeDiv.id, userForQR.name);
+                    qrContainer.appendChild(downloadBtn);
+                }
+
 
                 document.getElementById(nameInputId).value = '';
                 if (role === 'student') {
-                    document.getElementById('adminStudentClass').value = '';
+                    // MODIFIED: Reset dropdown
+                    document.getElementById('adminStudentClassSelect').value = '';
                 }
                 hideLoading();
                 showAlert(`${role.charAt(0).toUpperCase() + role.slice(1)} created successfully!`);
@@ -706,10 +856,11 @@
             const unsub = onSnapshot(classesRef(), (doc) => {
                 const listEl = document.getElementById('adminClassList');
                 const selectEl = document.getElementById('adminSearchClassSelect');
+                const studentClassSelectEl = document.getElementById('adminStudentClassSelect'); // New: for generation
 
                 let classNames = [];
                 if (doc.exists() && doc.data().classNames) {
-                    classNames = doc.data().classNames;
+                    classNames = doc.data().classNames.sort(); // Sort them
                 }
 
                 // 1. Populate the management list (with delete buttons)
@@ -725,12 +876,14 @@
                 }
 
                 // 2. Populate the filter dropdown
-                selectEl.innerHTML = '<option value="">Select a Class</option>'; // Default option
-                selectEl.innerHTML += classNames.map(name => `
-                    <option value="${name}">${name}</option>
-                `).join('');
+                const optionsHTML = classNames.map(name => `<option value="${name}">${name}</option>`).join('');
+                selectEl.innerHTML = '<option value="">Select a Class</option>' + optionsHTML;
+                
+                // 3. Populate the student generation dropdown
+                studentClassSelectEl.innerHTML = '<option value="">Select a Class</option>' + optionsHTML;
 
-                // 3. Add event listeners to delete buttons
+
+                // 4. Add event listeners to delete buttons
                 document.querySelectorAll('.btn-delete-class').forEach(btn => {
                     btn.onclick = (e) => {
                         const className = e.target.dataset.name;
@@ -796,11 +949,26 @@
                 }
                 listEl.innerHTML = snapshot.docs.map(doc => {
                     const user = doc.data();
+                    // --- MODIFICATION: Added delete button and updated layout ---
                     return `<div class="bg-gray-700 p-3 rounded-lg flex justify-between items-center">
-                                <span>${user.name} (${user.class || 'N/A'})</span>
-                                <span class="text-green-400">₹${user.balance.toFixed(2)}</span>
+                                <div>
+                                    <span>${user.name} (${user.class || 'N/A'})</span>
+                                    <span class="text-green-400 block text-sm">₹${user.balance.toFixed(2)}</span>
+                                </div>
+                                <button data-id="${doc.id}" data-name="${user.name}" class="btn-delete-student bg-red-600 hover:bg-red-700 text-white px-3 py-1 rounded-lg text-sm">Delete</button>
                             </div>`;
                 }).join('');
+
+                // --- MODIFICATION: Add listeners for new delete buttons ---
+                document.querySelectorAll('.btn-delete-student').forEach(btn => {
+                    btn.onclick = (e) => {
+                        const studentId = e.currentTarget.dataset.id;
+                        const studentName = e.currentTarget.dataset.name;
+                        showConfirm(`Are you sure you want to delete student "${studentName}"? This will remove their login and balance. This cannot be undone.`, () => {
+                            _deleteStudent(studentId);
+                        });
+                    };
+                });
             });
             currentUnsubscribes.push(unsub);
         }
@@ -867,6 +1035,27 @@
             } catch (error) {
                 console.error("Delete Stall Error:", error);
                 showAlert('Error deleting stall.');
+                hideLoading();
+            }
+        }
+
+        // --- NEW FUNCTION: To delete a student ---
+        async function _deleteStudent(studentId) {
+            if (!studentId) return;
+
+            showLoading('Deleting student...');
+            try {
+                const userDocRef = doc(usersRef(), studentId);
+                await deleteDoc(userDocRef);
+                
+                // Note: This does not delete associated transactions, preserving them for historical reports.
+                // This is consistent with how stalls are deleted (stall/user doc gone, but tx logs remain).
+
+                hideLoading();
+                showAlert('Student successfully deleted.');
+            } catch (error) {
+                console.error("Delete Student Error:", error);
+                showAlert('Error deleting student.');
                 hideLoading();
             }
         }
@@ -1128,6 +1317,10 @@
                 startRazorpayPayment(amount);
                 amountInput.value = ''; // Clear input
             };
+
+            // --- NEW: Add listeners for student pass buttons ---
+            document.getElementById('btnStudentPrintPass').onclick = () => printPass('student-printable-pass');
+            document.getElementById('btnStudentDownloadQR').onclick = () => downloadQR('studentPassQR', appState.currentUser.name);
         }
 
         function loadStudentDashboard() {
@@ -1135,6 +1328,22 @@
 
             document.getElementById('studentName').textContent = appState.currentUser.name;
             document.getElementById('studentIdDisplay').textContent = `ID: ${appState.currentUser.id}`;
+
+            // --- NEW: Populate and display Entry Pass ---
+            document.getElementById('studentPassName').textContent = appState.currentUser.name;
+            document.getElementById('studentPassClass').textContent = appState.currentUser.class || 'N/A';
+            
+            const qrContainer = document.getElementById('studentPassQR');
+            qrContainer.innerHTML = ''; // Clear previous
+            new QRCode(qrContainer, {
+                text: appState.currentUser.id,
+                width: 200,
+                height: 200,
+                colorDark: "#000000",
+                colorLight: "#ffffff",
+                correctLevel: QRCode.CorrectLevel.H
+            });
+            // --- END NEW ---
 
             // Listen for balance changes
             const userDocRef = doc(usersRef(), appState.currentUser.id);
@@ -1710,6 +1919,42 @@
         @keyframes spin {
             to { transform: rotate(360deg); }
         }
+
+        /* --- NEW: Print-specific styles --- */
+        @media print {
+            body * {
+                visibility: hidden;
+            }
+            .print-this-one, .print-this-one * {
+                visibility: visible;
+            }
+            .print-this-one {
+                position: absolute;
+                left: 0;
+                top: 0;
+                width: 100%;
+                max-width: 100%;
+                margin: 0;
+                padding: 20px;
+                border: none !important;
+                box-shadow: none !important;
+                background-color: white !important; /* Ensure white BG */
+            }
+            /* Ensure QR background is white for printing */
+            .print-this-one div[id^="qr-code-inner-"],
+            .print-this-one #studentPassQR {
+                background-color: white !important;
+            }
+            /* Ensure text is black for printing */
+            .print-this-one, .print-this-one * {
+                color: #000 !important;
+                background-color: white !important;
+            }
+            /* Hide buttons when printing the pass */
+            .print-hide {
+                display: none !important;
+            }
+        }
     </style>
 </head>
 <body class="bg-gray-900 text-white font-sans antialiased">
@@ -1790,20 +2035,22 @@
                         <h2 class="text-2xl font-semibold mb-4 text-blue-300">Generate Student</h2>
                         <div class="space-y-4">
                             <input type="text" id="adminStudentName" class="w-full bg-gray-700 text-white border border-gray-600 rounded-lg p-3" placeholder="Student Name">
-                            <input type="text" id="adminStudentClass" class="w-full bg-gray-700 text-white border border-gray-600 rounded-lg p-3" placeholder="Student Class (e.g., 10-B)">
+                            <!-- MODIFIED: Use a dropdown for class -->
+                            <select id="adminStudentClassSelect" class="w-full bg-gray-700 text-white border border-gray-600 rounded-lg p-3">
+                                <option value="">Select a Class</option>
+                                <!-- Populated by JS -->
+                            </select>
+                            
                             <button id="btnAdminGenerateStudent" class="w-full bg-blue-600 hover:bg-blue-700 text-white font-bold py-3 px-4 rounded-lg shadow-lg transition-all">
                                 Generate Student QR
                             </button>
-                            <div id="adminStudentQRContainer" class="bg-white p-4 rounded-lg text-black text-center mt-4">
-                                <!-- QR code will appear here --></div>
+                            <!-- MODIFIED: Container will be populated with a full pass -->
+                            <div id="adminStudentQRContainer" class="mt-4">
+                                <!-- Entry pass will appear here --></div>
 
                             <button id="btnAdminRechargeStudent" class="w-full bg-green-600 hover:bg-green-700 text-white font-bold py-3 px-4 rounded-lg shadow-lg transition-all mt-4">
                                 Recharge Student (Scan QR)
                             </button>
-
-                            <h3 class="text-xl font-semibold mt-6 mb-2">Current Students</h3>
-                            <div id="adminStudentList" class="space-y-2 max-h-60 overflow-y-auto">
-                                <!-- Student list loads here --></div>
                         </div>
                     </section>
 
@@ -1820,8 +2067,17 @@
                             <div id="adminStudentListByClass" class="space-y-2 max-h-60 overflow-y-auto">
                                 <!-- Student list will appear here --></div>
 
-                            <div id="adminSearchQRContainer" class="bg-white p-4 rounded-lg text-black text-center mt-4 hidden">
-                                <!-- Search result QR will appear here --></div>
+                            <!-- MODIFIED: Container will be populated with a full pass -->
+                            <div id="adminSearchQRContainer" class="mt-4 hidden">
+                                <!-- Search result Entry pass will appear here --></div>
+                        </div>
+                    </section>
+
+                    <!-- *** MODIFICATION: Current Student List MOVED to here *** -->
+                    <section class="bg-gray-800 p-6 rounded-lg shadow-xl">
+                        <h2 class="text-2xl font-semibold mb-4">Current Students</h2>
+                        <div id="adminStudentList" class="space-y-2 max-h-60 overflow-y-auto">
+                            <!-- Student list loads here -->
                         </div>
                     </section>
                 </div>
@@ -1835,6 +2091,7 @@
                             <button id="btnAdminGenerateStall" class="w-full bg-green-600 hover:bg-green-700 text-white font-bold py-3 px-4 rounded-lg shadow-lg transition-all">
                                 Generate Stall QR
                             </button>
+                            <!-- This container remains simple, for just the QR -->
                             <div id="adminStallQRContainer" class="bg-white p-4 rounded-lg text-black text-center mt-4">
                                 <!-- QR code will appear here --></div>
                         </div>
@@ -1846,6 +2103,7 @@
                             <button id="btnAdminSearchStall" class="w-full bg-yellow-600 hover:bg-yellow-700 text-white font-bold py-3 px-4 rounded-lg shadow-lg transition-all">
                                 Search
                             </button>
+                            <!-- This container remains simple, for just the QR -->
                             <div id="adminSearchStallQRContainer" class="bg-white p-4 rounded-lg text-black text-center mt-4 hidden">
                                 <!-- Search result QR will appear here --></div>
                         </div>
@@ -1993,6 +2251,44 @@
                     <button id="btnStudentRecharge" class="w-full bg-green-600 hover:bg-green-700 text-white font-bold py-3 px-4 rounded-lg shadow-lg transition-all">
                         Go to Payment
                     </button>
+                </section>
+
+                <!-- NEW: Entry Pass Section --><section class="bg-gray-800 p-6 rounded-lg shadow-xl space-y-4">
+                    <h2 class="text-2xl font-semibold mb-4 text-blue-300">My Entry Pass</h2>
+                    
+                    <!-- This is the pass itself -->
+                    <div id="student-printable-pass" class="printable-area bg-white text-black p-6 rounded-lg shadow-lg max-w-xs mx-auto border-4 border-blue-600">
+                        
+                        <!-- School Info -->
+                        <div class="text-center border-b pb-4 border-gray-300">
+                            <h3 class="text-xl font-bold text-gray-800">Udaya Public School</h3>
+                            <p class="text-xs text-gray-600">Mahadev Jharkhandi, Kunraghat, Gorakhpur</p>
+                        </div>
+                        
+                        <!-- Event Info -->
+                        <div class="my-4 text-center">
+                            <p class="text-sm font-medium text-gray-700">ANNUAL FEST 2025-26</p>
+                            <p class="text-2xl font-bold text-blue-600">ENTRY PASS</p>
+                            <p class="text-sm font-semibold text-gray-700">Date: 1-FEB-2026</p>
+                        </div>
+                        
+                        <!-- Student Info -->
+                        <div class="my-4 text-center">
+                            <p id="studentPassName" class="text-lg font-bold text-black">[Student Name]</p>
+                            <p class="text-base text-gray-700">Class: <span id="studentPassClass">[Class]</span></p>
+                        </div>
+                        
+                        <!-- QR Code -->
+                        <div id="studentPassQR" class="flex justify-center p-4 bg-white rounded-lg">
+                            <!-- Student QR will be generated here -->
+                        </div>
+                    </div>
+
+                    <!-- Action Buttons -->
+                    <div class="flex space-x-2 mt-4 max-w-xs mx-auto print-hide">
+                        <button id="btnStudentPrintPass" class="w-full bg-blue-600 hover:bg-blue-700 text-white font-bold py-2 px-4 rounded-lg">Print Pass</button>
+                        <button id="btnStudentDownloadQR" class="w-full bg-gray-600 hover:bg-gray-700 text-white font-bold py-2 px-4 rounded-lg">Download QR</button>
+                    </div>
                 </section>
 
                 <!-- Stalls & Prices --><section>
@@ -2171,7 +2467,6 @@
             <p class="font-semibold">Udaya Public School</p>
             <p>Mahadev Jharkhandi, Kunraghat, Gorakhpur</p>
         </footer>
-    </div> <!-- End Main Container --></body>
+    </div> <!-- End Main Container -->
+</body>
 </html>
-
-
