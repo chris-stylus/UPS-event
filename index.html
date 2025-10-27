@@ -1,0 +1,1427 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Smart QR Event Wallet</title>
+    <!-- 1. Tailwind CSS -->
+    <script src="https://cdn.tailwindcss.com"></script>
+    <!-- 2. QR Code Generation Library -->
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/qrcodejs/1.0.0/qrcode.min.js"></script>
+    <!-- 3. QR Code Scanning Library -->
+    <script src="https://unpkg.com/html5-qrcode@2.0.9/dist/html5-qrcode.min.js"></script>
+    <!-- 4. Firebase SDKs -->
+    <script type="module">
+        // Import Firebase modules
+        import { initializeApp } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-app.js";
+        import { 
+            getAuth, 
+            signInAnonymously, 
+            signInWithCustomToken, 
+            onAuthStateChanged,
+            setPersistence,
+            inMemoryPersistence
+        } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-auth.js";
+        import { 
+            getFirestore, 
+            doc, 
+            getDoc, 
+            setDoc, 
+            updateDoc, 
+            deleteDoc, 
+            onSnapshot, 
+            collection, 
+            query, 
+            where, 
+            addDoc, 
+            getDocs,
+            serverTimestamp,
+            increment,
+            arrayUnion,
+            runTransaction
+        } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-firestore.js";
+        import { getAnalytics } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-analytics.js";
+
+        // --- GLOBAL STATE ---
+        let db, auth, analytics;
+        let html5QrCode; // Main scanner
+        let stallQrScanner; // Stall's payment scanner
+        let currentUnsubscribes = []; // To detach listeners on logout
+        let appState = {
+            currentUser: null, // { id, name, role, balance }
+            currentView: 'home',
+            rechargeAmount: 0,
+            scannedStudentId: null,
+            stallCart: {},
+        };
+        let modal, modalMessage, modalButton;
+
+        // --- FIREBASE CONFIG & PATHS ---
+        // ----------------- IMPORTANT -----------------
+        // This is a unique ID for your event data. 
+        // You can change this to 'school-fest-2025' or any unique name.
+        const appId = 'my-event-wallet';
+        // ---------------------------------------------
+        
+        // --- DOM Elements ---
+        let views = {};
+        let homeView, adminLoginView, adminDashboardView, scannerView, studentDashboardView, stallDashboardView, stallPaymentView, loadingView, rechargeView;
+
+        // --- FIREBASE COLLECTION REFERENCES ---
+        // Using public collections for this shared event app
+        const usersRef = () => collection(db, 'artifacts', appId, 'public', 'data', 'users');
+        const stallsRef = () => collection(db, 'artifacts', appId, 'public', 'data', 'stalls');
+        const transactionsRef = () => collection(db, 'artifacts', appId, 'public', 'data', 'transactions');
+        const configRef = () => doc(db, 'artifacts', appId, 'public', 'data', 'eventConfig', 'config');
+
+        // --- INITIALIZATION ---
+        document.addEventListener('DOMContentLoaded', () => {
+            // Cache all view elements
+            views = {
+                home: document.getElementById('homeView'),
+                adminLogin: document.getElementById('adminLoginView'),
+                adminDashboard: document.getElementById('adminDashboardView'),
+                scanner: document.getElementById('scannerView'),
+                studentDashboard: document.getElementById('studentDashboardView'),
+                stallDashboard: document.getElementById('stallDashboardView'),
+                stallPayment: document.getElementById('stallPaymentView'),
+                loading: document.getElementById('loadingView'),
+                recharge: document.getElementById('rechargeView'),
+            };
+            modal = document.getElementById('modal');
+            modalMessage = document.getElementById('modalMessage');
+            modalButton = document.getElementById('modalButton');
+
+            // Initialize Firebase
+            initFirebase();
+            
+            // Attach base event listeners
+            attachHomeListeners();
+            attachAdminLoginListeners();
+            attachScannerListeners();
+            attachAdminDashboardListeners();
+            attachStudentDashboardListeners();
+            attachStallDashboardListeners();
+            attachStallPaymentListeners();
+            attachRechargeListeners();
+
+            modalButton.onclick = () => modal.classList.add('hidden');
+        });
+
+        async function initFirebase() {
+            try {
+              /*  // ----------------- YOUR FIREBASE CONFIG GOES HERE -----------------
+                // This config is for the "school-wallet-udaya" project you provided.
+               / const firebaseConfig = {
+                  apiKey: "AIzaSyBNN0fWJISI2T9sqQ1U_T3C8ZO5yGGh6Ug",
+                  authDomain: "school-wallet-udaya.firebaseapp.com",
+                  projectId: "school-wallet-udaya",
+                  storageBucket: "school-wallet-udaya.firebasestorage.app",
+                  messagingSenderId: "432765586897",
+                  appId: "1:432765586897:web:27239002a2529b152a64f0",
+                  measurementId: "G-4FPHGP27WK"
+                };
+          */
+                // -------------------------------------------------------------------
+                
+                // --- UNCOMMENT THIS BLOCK FOR GITHUB PAGES DEPLOYMENT ---
+                
+                const firebaseConfig = {
+                  apiKey: "AIzaSyCsuWEjnrYr1g7ruvZ60ur6TADzbHkJpno",
+                  authDomain: "qr-wallet-2ef48.firebaseapp.com",
+                  projectId: "qr-wallet-2ef48",
+                  storageBucket: "qr-wallet-2ef48.firebasestorage.app",
+                  messagingSenderId: "755057942199",
+                  appId: "1:755057942199:web:f5fa763b08534bcf1f3732",
+                  measurementId: "G-NSLXTCC8JM"
+                };
+                
+                if (firebaseConfig.projectId === "YOUR_PROJECT_ID") {
+                     showAlert("SETUP REQUIRED: Please add your Firebase project config to index.html (around line 125) before deploying.");
+                     console.error("Firebase config is not set.");
+                     return;
+                }
+                
+                // --- END UNCOMMENT BLOCK ---
+
+
+                // 2. Initialize Firebase
+                const app = initializeApp(firebaseConfig);
+                db = getFirestore(app);
+                auth = getAuth(app);
+                analytics = getAnalytics(app);
+
+                // 3. Set persistence to in-memory for this transient app
+                await setPersistence(auth, inMemoryPersistence);
+
+                // 4. Listen for auth state
+                onAuthStateChanged(auth, async (user) => {
+                    if (!user) {
+                        // 5. No user, sign in.
+                        showLoading('Connecting to event...');
+                        try {
+                            // For public deployment, we sign in users anonymously.
+                            await signInAnonymously(auth);
+                            console.log("Firebase Auth successful.");
+                            // Auth state change will re-trigger this listener
+                        } catch (error) {
+                            console.error("Auth Error:", error);
+                            if (error.code === 'auth/configuration-not-found') {
+                                showAlert("SETUP ERROR: Anonymous sign-in is not enabled in your Firebase project. Please go to your Firebase Console -> Authentication -> Sign-in method -> and enable 'Anonymous'. Then refresh this page.");
+                            } else {
+                                showAlert(`Error connecting to event server: ${error.message}`);
+                            }
+                        }
+                    } else {
+                        // User is signed in.
+                        console.log("User is authenticated:", user.uid);
+                        hideLoading();
+                        showView('home');
+                    }
+                });
+
+            } catch (error) {
+                console.error("Firebase Init Error:", error);
+                showAlert("Critical error loading app configuration.");
+            }
+        }
+
+        // --- VIEW NAVIGATION ---
+        function showView(viewId) {
+            // Detach all real-time listeners
+            cleanupListeners();
+            // Stop any active scanners
+            stopAllScanners();
+            
+            appState.currentView = viewId;
+            for (const id in views) {
+                if (views[id]) {
+                    views[id].classList.add('hidden');
+                }
+            }
+            if (views[viewId]) {
+                views[viewId].classList.remove('hidden');
+            }
+            hideLoading();
+        }
+        
+        function showLoading(message) {
+            document.getElementById('loadingMessage').textContent = message;
+            views.loading.classList.remove('hidden');
+        }
+
+        function hideLoading() {
+            views.loading.classList.add('hidden');
+        }
+
+        function showAlert(message) {
+            modalMessage.textContent = message;
+            modal.classList.remove('hidden');
+        }
+        
+        function cleanupListeners() {
+            currentUnsubscribes.forEach(unsub => unsub());
+            currentUnsubscribes = [];
+        }
+        
+        function stopAllScanners() {
+            try {
+                if (html5QrCode && html5QrCode.isScanning) {
+                    html5QrCode.stop().catch(err => {
+                        console.warn("Main scanner stop error (ignorable):", err);
+                    });
+                }
+            } catch (e) {
+                console.warn("Error accessing main scanner:", e);
+            }
+            
+            try {
+                if (stallQrScanner && stallQrScanner.isScanning) {
+                    stallQrScanner.stop().catch(err => {
+                        console.warn("Stall scanner stop error (ignorable):", err);
+                    });
+                }
+            } catch (e) {
+                console.warn("Error accessing stall scanner:", e);
+            }
+        }
+        
+        function logout() {
+            appState.currentUser = null;
+            appState.scannedStudentId = null;
+            appState.stallCart = {};
+            showView('home');
+        }
+
+        // --- HOME VIEW LOGIC ---
+        function attachHomeListeners() {
+            document.getElementById('btnAdminLogin').onclick = () => showView('adminLogin');
+            document.getElementById('btnStallLogin').onclick = () => startScanner('stall');
+            document.getElementById('btnStudentLogin').onclick = () => startScanner('student');
+        }
+
+        // --- SCANNER VIEW LOGIC ---
+        function attachScannerListeners() {
+            document.getElementById('btnCancelScan').onclick = () => showView('home');
+        }
+        
+        function startScanner(loginType) {
+            showView('scanner');
+            const scannerTitle = document.getElementById('scannerTitle');
+            scannerTitle.textContent = `Scan ${loginType.charAt(0).toUpperCase() + loginType.slice(1)} QR Code`;
+            
+            // Check if instance already exists
+            if (!html5QrCode) {
+                html5QrCode = new Html5Qrcode("qr-reader");
+            }
+            
+            const config = { fps: 10, qrbox: { width: 250, height: 250 } };
+            
+            // (decodedText, decodedResult)
+            const onScanSuccess = (decodedText) => {
+                handleLoginScan(decodedText, loginType);
+            };
+            
+            const onScanFailure = (error) => {
+                // This will fire continuously, so be careful logging.
+                // console.warn(`QR scan failure: ${error}`);
+            };
+            
+            html5QrCode.start({ facingMode: "environment" }, config, onScanSuccess, onScanFailure)
+                .catch(err => {
+                    console.error("Scanner start error:", err);
+                    showAlert("Could not start camera. Please grant camera permissions.");
+                    showView('home');
+                });
+        }
+        
+        async function handleLoginScan(userId, loginType) {
+            // Stop scanner *before* navigating
+            stopAllScanners();
+            showLoading('Verifying QR Code...');
+            
+            try {
+                const userDocRef = doc(usersRef(), userId);
+                const userDoc = await getDoc(userDocRef);
+                
+                if (!userDoc.exists()) {
+                    throw new Error('Invalid QR Code. Not found in system.');
+                }
+                
+                const user = userDoc.data();
+                if (user.role !== loginType) {
+                    throw new Error(`Incorrect QR Code. This is a ${user.role} QR, not a ${loginType} QR.`);
+                }
+                
+                appState.currentUser = { id: userId, ...user };
+                
+                if (loginType === 'student') {
+                    loadStudentDashboard();
+                } else if (loginType === 'stall') {
+                    loadStallDashboard();
+                }
+                
+            } catch (error) {
+                console.error("Login Scan Error:", error);
+                showAlert(error.message);
+                showView('home');
+            }
+        }
+
+        // --- ADMIN LOGIN VIEW LOGIC ---
+        function attachAdminLoginListeners() {
+            document.getElementById('btnAdminLoginBack').onclick = () => showView('home');
+            document.getElementById('btnAdminLoginSubmit').onclick = async () => {
+                const password = document.getElementById('adminPassword').value;
+                if (!password) {
+                    showAlert('Please enter a password.');
+                    return;
+                }
+                
+                showLoading('Verifying password...');
+                try {
+                    const config = await getDoc(configRef());
+                    
+                    if (!config.exists()) {
+                        // First time login, set default password
+                        await setDoc(configRef(), { adminPassword: 'admin123' });
+                        if (password === 'admin123') {
+                            showAlert('First time setup. Default password is "admin123".');
+                            loadAdminDashboard();
+                        } else {
+                            throw new Error('Wrong password.');
+                        }
+                    } else {
+                        // Check password
+                        if (config.data().adminPassword === password) {
+                            loadAdminDashboard();
+                        } else {
+                            throw new Error('Wrong password.');
+                        }
+                    }
+                } catch (error) {
+                    console.error("Admin Login Error:", error);
+                    showAlert(error.message);
+                    hideLoading();
+                }
+            };
+        }
+
+        // --- ADMIN DASHBOARD LOGIC ---
+        function attachAdminDashboardListeners() {
+            document.getElementById('btnAdminLogout').onclick = logout;
+            
+            // Tab navigation
+            const tabs = document.querySelectorAll('#adminDashboardView .admin-tab');
+            const tabPanels = document.querySelectorAll('#adminDashboardView .admin-tab-panel');
+            tabs.forEach(tab => {
+                tab.onclick = () => {
+                    // Reset styles
+                    tabs.forEach(t => t.classList.remove('bg-blue-600', 'text-white'));
+                    tabs.forEach(t => t.classList.add('bg-gray-700', 'text-gray-300'));
+                    tabPanels.forEach(p => p.classList.add('hidden'));
+                    
+                    // Set active styles
+                    tab.classList.add('bg-blue-600', 'text-white');
+                    tab.classList.remove('bg-gray-700', 'text-gray-300');
+                    document.getElementById(tab.dataset.target).classList.remove('hidden');
+                };
+            });
+
+            // --- User Management ---
+            document.getElementById('btnAdminGenerateStudent').onclick = () => generateUser('student');
+            document.getElementById('btnAdminGenerateStall').onclick = () => generateUser('stall');
+            
+            // --- Stall Management ---
+            document.getElementById('btnAdminAddMenuItem').onclick = addMenuItem;
+        }
+
+        function loadAdminDashboard() {
+            showView('adminDashboard');
+            appState.currentUser = { id: 'admin', role: 'admin' };
+            
+            // Load all data
+            loadAdminStudents();
+            loadAdminStallsAndMenus();
+            loadAdminReports();
+        }
+
+        async function generateUser(role) {
+            const nameInputId = role === 'student' ? 'adminStudentName' : 'adminStallName';
+            const name = document.getElementById(nameInputId).value;
+            const qrContainerId = role === 'student' ? 'adminStudentQRContainer' : 'adminStallQRContainer';
+            
+            if (!name) {
+                showAlert(`Please enter a ${role} name.`);
+                return;
+            }
+            
+            showLoading(`Generating ${role}...`);
+            try {
+                // 1. Create the user document
+                const newUser = {
+                    name,
+                    role,
+                    balance: role === 'student' ? 0 : null,
+                    createdAt: serverTimestamp()
+                };
+                const newDocRef = await addDoc(usersRef(), newUser);
+                const userId = newDocRef.id;
+
+                // 2. Update user with their own ID
+                await updateDoc(newDocRef, { userId: userId });
+                
+                // 3. If it's a stall, create the stall-specific doc
+                if (role === 'stall') {
+                    await setDoc(doc(stallsRef(), userId), {
+                        name: name,
+                        ownerId: userId,
+                        menu: []
+                    });
+                }
+                
+                // 4. Generate QR Code
+                const qrContainer = document.getElementById(qrContainerId);
+                qrContainer.innerHTML = ''; // Clear it first
+
+                // Add title
+                const titleEl = document.createElement('h3');
+                titleEl.className = "text-lg font-semibold mb-2";
+                titleEl.textContent = name;
+                qrContainer.appendChild(titleEl);
+                
+                // Create dedicated div for QR
+                const qrCodeDiv = document.createElement('div');
+                qrCodeDiv.className = "flex justify-center"; // Center the QR image
+                qrContainer.appendChild(qrCodeDiv);
+
+                // Generate QR in the dedicated div
+                new QRCode(qrCodeDiv, {
+                    text: userId,
+                    width: 200,
+                    height: 200,
+                    colorDark: "#000000",
+                    colorLight: "#ffffff",
+                    correctLevel: QRCode.CorrectLevel.H
+                });
+
+                // Add text ID
+                const textEl = document.createElement('p');
+                textEl.className = "text-xs mt-2 break-all";
+                textEl.textContent = userId;
+                qrContainer.appendChild(textEl);
+                
+                document.getElementById(nameInputId).value = '';
+                hideLoading();
+                showAlert(`${role.charAt(0).toUpperCase() + role.slice(1)} created successfully!`);
+                
+            } catch (error) {
+                console.error(`Generate ${role} Error:`, error);
+                showAlert(`Error creating ${role}.`);
+                hideLoading();
+            }
+        }
+        
+        function loadAdminStudents() {
+            const q = query(usersRef(), where('role', '==', 'student'));
+            const unsub = onSnapshot(q, (snapshot) => {
+                const listEl = document.getElementById('adminStudentList');
+                if (snapshot.empty) {
+                    listEl.innerHTML = '<p class="text-gray-400">No students generated yet.</p>';
+                    return;
+                }
+                listEl.innerHTML = snapshot.docs.map(doc => {
+                    const user = doc.data();
+                    return `<div class="bg-gray-700 p-3 rounded-lg flex justify-between items-center">
+                                <span>${user.name}</span>
+                                <span class="text-green-400">₹${user.balance.toFixed(2)}</span>
+                            </div>`;
+                }).join('');
+            });
+            currentUnsubscribes.push(unsub);
+        }
+
+        function loadAdminStallsAndMenus() {
+            const q = query(stallsRef());
+            const unsub = onSnapshot(q, (snapshot) => {
+                const listEl = document.getElementById('adminStallList');
+                const selectEl = document.getElementById('adminStallSelect');
+                
+                if (snapshot.empty) {
+                    const msg = '<p class="text-gray-400">No stalls generated yet.</p>';
+                    listEl.innerHTML = msg;
+                    selectEl.innerHTML = '<option value="">No stalls available</option>';
+                    return;
+                }
+                
+                listEl.innerHTML = snapshot.docs.map(doc => {
+                    const stall = doc.data();
+                    return `<div class="bg-gray-700 p-4 rounded-lg">
+                                <h4 class="text-lg font-semibold">${stall.name}</h4>
+                                <div id="menu-list-${stall.ownerId}" class="mt-2 space-y-1">
+                                    ${renderMenuList(stall.menu)}
+                                </div>
+                            </div>`;
+                }).join('');
+                
+                selectEl.innerHTML = snapshot.docs.map(doc => {
+                    const stall = doc.data();
+                    return `<option value="${stall.ownerId}">${stall.name}</option>`;
+                }).join('');
+            });
+            currentUnsubscribes.push(unsub);
+        }
+        
+        function renderMenuList(menu) {
+            if (!menu || menu.length === 0) {
+                return '<p class="text-sm text-gray-400">No menu items yet.</p>';
+            }
+            return menu.map(item => `
+                <div class="flex justify-between text-sm bg-gray-600 px-2 py-1 rounded">
+                    <span>${item.name}</span>
+                    <span class="font-medium">₹${item.price.toFixed(2)}</span>
+                </div>
+            `).join('');
+        }
+        
+        async function addMenuItem() {
+            const stallId = document.getElementById('adminStallSelect').value;
+            const name = document.getElementById('adminItemName').value;
+            const price = parseFloat(document.getElementById('adminItemPrice').value);
+            
+            if (!stallId || !name || !price) {
+                showAlert('Please fill out all fields for the menu item.');
+                return;
+            }
+            
+            showLoading('Adding item...');
+            try {
+                const stallDocRef = doc(stallsRef(), stallId);
+                const newItem = {
+                    id: 'item_' + crypto.randomUUID(),
+                    name,
+                    price
+                };
+                
+                await updateDoc(stallDocRef, {
+                    menu: arrayUnion(newItem)
+                });
+                
+                document.getElementById('adminItemName').value = '';
+                document.getElementById('adminItemPrice').value = '';
+                hideLoading();
+                showAlert('Menu item added!');
+                
+            } catch (error) {
+                console.error("Add Menu Item Error:", error);
+                showAlert('Error adding item.');
+                hideLoading();
+            }
+        }
+        
+        function loadAdminReports() {
+            const q = query(transactionsRef());
+            const unsub = onSnapshot(q, (snapshot) => {
+                const listEl = document.getElementById('adminTransactionList');
+                let totalSales = 0;
+                let totalRecharged = 0;
+                const stallSales = {};
+                
+                if (snapshot.empty) {
+                    listEl.innerHTML = '<p class="text-gray-400">No transactions yet.</p>';
+                    document.getElementById('adminTotalSales').textContent = '₹0.00';
+                    document.getElementById('adminTotalRecharged').textContent = '₹0.00';
+                    document.getElementById('adminStallSalesSummary').innerHTML = '';
+                    return;
+                }
+                
+                const transactions = snapshot.docs.map(doc => {
+                    const tx = doc.data();
+                    if (tx.type === 'purchase') {
+                        totalSales += tx.amount;
+                        stallSales[tx.stallName] = (stallSales[tx.stallName] || 0) + tx.amount;
+                    } else if (tx.type === 'recharge') {
+                        totalRecharged += tx.amount;
+                    }
+                    return tx;
+                });
+                
+                document.getElementById('adminTotalSales').textContent = `₹${totalSales.toFixed(2)}`;
+                document.getElementById('adminTotalRecharged').textContent = `₹${totalRecharged.toFixed(2)}`;
+                
+                const stallSalesEl = document.getElementById('adminStallSalesSummary');
+                stallSalesEl.innerHTML = Object.entries(stallSales).map(([name, amount]) => `
+                    <div class="flex justify-between p-2 bg-gray-700 rounded">
+                        <span>${name}</span>
+                        <span class="font-medium">₹${amount.toFixed(2)}</span>
+                    </div>
+                `).join('');
+                
+                listEl.innerHTML = transactions.map(tx => {
+                    const time = tx.timestamp ? new Date(tx.timestamp.seconds * 1000).toLocaleTimeString() : '...';
+                    if (tx.type === 'purchase') {
+                        return `<div class="bg-gray-700 p-3 rounded-lg">
+                                    <p class="font-semibold">${tx.studentName} paid ${tx.stallName}</p>
+                                    <p class="text-sm">${tx.items.map(i => `${i.name} (x${i.quantity})`).join(', ')}</p>
+                                    <div class="flex justify-between items-center mt-1">
+                                        <span class="text-red-400 font-bold">- ₹${tx.amount.toFixed(2)}</span>
+                                        <span class="text-xs text-gray-400">${time}</span>
+                                    </div>
+                                </div>`;
+                    } else {
+                        return `<div class="bg-gray-700 p-3 rounded-lg">
+                                    <p class="font-semibold">${tx.studentName} recharged wallet</p>
+                                    <div class="flex justify-between items-center mt-1">
+                                        <span class="text-green-400 font-bold">+ ₹${tx.amount.toFixed(2)}</span>
+                                        <span class="text-xs text-gray-400">${time}</span>
+                                    </div>
+                                </div>`;
+                    }
+                }).reverse().join('');
+            });
+            currentUnsubscribes.push(unsub);
+        }
+
+        // --- STUDENT DASHBOARD LOGIC ---
+        function attachStudentDashboardListeners() {
+            document.getElementById('btnStudentLogout').onclick = logout;
+            document.getElementById('btnStudentBack').onclick = logout;
+            document.getElementById('btnStudentRecharge').onclick = () => {
+                const amount = parseFloat(document.getElementById('studentRechargeAmount').value);
+                if (!amount || amount <= 0) {
+                    showAlert('Please enter a valid amount to recharge.');
+                    return;
+                }
+                appState.rechargeAmount = amount;
+                document.getElementById('rechargeAmountDisplay').textContent = `₹${amount.toFixed(2)}`;
+                showView('recharge');
+            };
+        }
+        
+        function loadStudentDashboard() {
+            showView('studentDashboard');
+            
+            // Set name
+            document.getElementById('studentName').textContent = appState.currentUser.name;
+            document.getElementById('studentIdDisplay').textContent = `ID: ${appState.currentUser.id}`;
+            
+            // Listen for balance changes
+            const userDocRef = doc(usersRef(), appState.currentUser.id);
+            const unsubBalance = onSnapshot(userDocRef, (doc) => {
+                if (doc.exists()) {
+                    const user = doc.data();
+                    appState.currentUser.balance = user.balance;
+                    document.getElementById('studentBalance').textContent = `₹${user.balance.toFixed(2)}`;
+                } else {
+                    // User might have been deleted
+                    showAlert("Your user account was not found. Logging out.");
+                    logout();
+                }
+            });
+            currentUnsubscribes.push(unsubBalance);
+            
+            // Load stalls and prices
+            loadStudentStallList();
+            
+            // Load transaction history
+            loadStudentTransactionHistory();
+        }
+        
+        async function loadStudentStallList() {
+            const listEl = document.getElementById('studentStallList');
+            try {
+                const snapshot = await getDocs(stallsRef());
+                if (snapshot.empty) {
+                    listEl.innerHTML = '<p class="text-gray-400">No stalls are open yet.</p>';
+                    return;
+                }
+                listEl.innerHTML = snapshot.docs.map(doc => {
+                    const stall = doc.data();
+                    return `<div class="bg-gray-800 p-4 rounded-lg">
+                                <h4 class="text-xl font-semibold text-blue-300">${stall.name}</h4>
+                                <div class="mt-2 space-y-1">
+                                    ${renderMenuList(stall.menu)}
+                                </div>
+                            </div>`;
+                }).join('');
+            } catch (error) {
+                console.error("Load Stalls Error:", error);
+                listEl.innerHTML = '<p class="text-red-400">Error loading stalls.</p>';
+            }
+        }
+        
+        function loadStudentTransactionHistory() {
+            const q = query(transactionsRef(), where('studentId', '==', appState.currentUser.id));
+            const listEl = document.getElementById('studentTransactionList');
+            
+            const unsubHistory = onSnapshot(q, (snapshot) => {
+                if (snapshot.empty) {
+                    listEl.innerHTML = '<p class="text-gray-400">No transactions yet.</p>';
+                    return;
+                }
+                listEl.innerHTML = snapshot.docs.map(doc => {
+                    const tx = doc.data();
+                    const time = tx.timestamp ? new Date(tx.timestamp.seconds * 1000).toLocaleString() : '...';
+                    if (tx.type === 'purchase') {
+                        return `<div class="bg-gray-700 p-3 rounded-lg">
+                                    <p class="font-semibold">Paid ${tx.stallName}</p>
+                                    <p class="text-sm">${tx.items.map(i => `${i.name} (x${i.quantity})`).join(', ')}</p>
+                                    <div class="flex justify-between items-center mt-1">
+                                        <span class="text-red-400 font-bold">- ₹${tx.amount.toFixed(2)}</span>
+                                        <span class="text-xs text-gray-400">${time}</span>
+                                    </div>
+                                </div>`;
+                    } else {
+                        return `<div class="bg-gray-700 p-3 rounded-lg">
+                                    <p class="font-semibold">Wallet Recharge</p>
+                                    <div class="flex justify-between items-center mt-1">
+                                        <span class="text-green-400 font-bold">+ ₹${tx.amount.toFixed(2)}</span>
+                                        <span class="text-xs text-gray-400">${time}</span>
+                                    </div>
+                                </div>`;
+                    }
+                }).reverse().join('');
+            });
+            currentUnsubscribes.push(unsubHistory);
+        }
+
+        // --- RECHARGE VIEW LOGIC ---
+        function attachRechargeListeners() {
+            document.getElementById('btnPaymentSuccess').onclick = handleRecharge;
+            document.getElementById('btnRechargeBack').onclick = () => loadStudentDashboard();
+            document.getElementById('btnPaymentFail').onclick = () => {
+                showAlert('Payment failed. Please try again.');
+                document.getElementById('studentRechargeAmount').value = '';
+                showView('studentDashboard');
+            };
+        }
+        
+        async function handleRecharge() {
+            showLoading('Processing Recharge...');
+            const amount = appState.rechargeAmount;
+            
+            try {
+                const studentDocRef = doc(usersRef(), appState.currentUser.id);
+                
+                await runTransaction(db, async (transaction) => {
+                    // Create transaction log first
+                    const newTxRef = doc(transactionsRef()); // Auto-generate ID
+                    transaction.set(newTxRef, {
+                        studentId: appState.currentUser.id,
+                        studentName: appState.currentUser.name,
+                        amount: amount,
+                        type: 'recharge',
+                        timestamp: serverTimestamp()
+                    });
+                    
+                    // Update student balance
+                    transaction.update(studentDocRef, {
+                        balance: increment(amount)
+                    });
+                });
+                
+                document.getElementById('studentRechargeAmount').value = '';
+                appState.rechargeAmount = 0;
+                showAlert('Recharge Successful!');
+                loadStudentDashboard(); // This will navigate to studentDashboard
+                
+            } catch (error) {
+                console.error("Recharge Error:", error);
+                showAlert('Recharge failed. Please try again.');
+                hideLoading();
+            }
+        }
+
+        // --- STALL DASHBOARD LOGIC ---
+        function attachStallDashboardListeners() {
+            document.getElementById('btnStallLogout').onclick = logout;
+            document.getElementById('btnStallBack').onclick = logout;
+            document.getElementById('btnStallScanToPay').onclick = startStallPaymentScan;
+        }
+
+        function loadStallDashboard() {
+            showView('stallDashboard');
+            
+            document.getElementById('stallName').textContent = appState.currentUser.name;
+            
+            // Load My Menu
+            const stallDocRef = doc(stallsRef(), appState.currentUser.id);
+            const unsubMenu = onSnapshot(stallDocRef, (doc) => {
+                if (doc.exists()) {
+                    const stall = doc.data();
+                    const menuEl = document.getElementById('stallMenuList');
+                    menuEl.innerHTML = renderMenuList(stall.menu);
+                    appState.currentUser.menu = stall.menu; // Cache menu
+                } else {
+                    showAlert("Your stall data was not found. Logging out.");
+                    logout();
+                }
+            });
+            currentUnsubscribes.push(unsubMenu);
+            
+            // Load Sales History
+            const q = query(transactionsRef(), where('stallId', '==', appState.currentUser.id));
+            const listEl = document.getElementById('stallSaleList');
+            const salesTotalEl = document.getElementById('stallTotalSales');
+            
+            const unsubHistory = onSnapshot(q, (snapshot) => {
+                let totalSales = 0;
+                if (snapshot.empty) {
+                    listEl.innerHTML = '<p class="text-gray-400">No sales yet.</p>';
+                    salesTotalEl.textContent = '₹0.00';
+                    return;
+                }
+                
+                listEl.innerHTML = snapshot.docs.map(doc => {
+                    const tx = doc.data();
+                    totalSales += tx.amount;
+                    const time = tx.timestamp ? new Date(tx.timestamp.seconds * 1000).toLocaleString() : '...';
+                    
+                    return `<div class="bg-gray-700 p-3 rounded-lg">
+                                <p class="font-semibold">Sale to ${tx.studentName}</p>
+                                <p class="text-sm">${tx.items.map(i => `${i.name} (x${i.quantity})`).join(', ')}</p>
+                                <div class="flex justify-between items-center mt-1">
+                                    <span class="text-green-400 font-bold">+ ₹${tx.amount.toFixed(2)}</span>
+                                    <span class="text-xs text-gray-400">${time}</span>
+                                </div>
+                            </div>`;
+                }).reverse().join('');
+                
+                salesTotalEl.textContent = `₹${totalSales.toFixed(2)}`;
+            });
+            currentUnsubscribes.push(unsubHistory);
+        }
+        
+        // --- STALL PAYMENT VIEW LOGIC ---
+        function attachStallPaymentListeners() {
+            document.getElementById('btnStallPaymentCancel').onclick = () => loadStallDashboard();
+            document.getElementById('btnStallConfirmPayment').onclick = processPayment;
+        }
+        
+        function startStallPaymentScan() {
+            showView('stallPayment');
+            appState.scannedStudentId = null;
+            appState.stallCart = {};
+            
+            // Hide details, show scanner
+            document.getElementById('stallPaymentDetails').classList.add('hidden');
+            document.getElementById('stall-qr-reader-container').classList.remove('hidden');
+            document.getElementById('btnStallConfirmPayment').classList.add('hidden');
+            
+            if (!stallQrScanner) {
+                stallQrScanner = new Html5Qrcode("stall-qr-reader");
+            }
+            const config = { fps: 10, qrbox: { width: 250, height: 250 } };
+            
+            const onScanSuccess = async (decodedText) => {
+                stopAllScanners();
+                showLoading('Fetching Student Details...');
+                
+                try {
+                    const userDocRef = doc(usersRef(), decodedText);
+                    const userDoc = await getDoc(userDocRef);
+                    
+                    if (!userDoc.exists() || userDoc.data().role !== 'student') {
+                        throw new Error('Invalid or non-student QR code.');
+                    }
+                    
+                    const student = userDoc.data();
+                    appState.scannedStudentId = decodedText;
+                    
+                    // Show details, hide scanner
+                    document.getElementById('stall-qr-reader-container').classList.add('hidden');
+                    document.getElementById('stallPaymentDetails').classList.remove('hidden');
+                    document.getElementById('btnStallConfirmPayment').classList.remove('hidden');
+                    
+                    document.getElementById('stallPaymentStudentName').textContent = student.name;
+                    document.getElementById('stallPaymentStudentBalance').textContent = `₹${student.balance.toFixed(2)}`;
+                    
+                    // Build the menu/cart UI
+                    buildCartUI(student.balance);
+                    hideLoading();
+                    
+                } catch (error) {
+                    console.error("Stall Scan Error:", error);
+                    showAlert(error.message);
+                    loadStallDashboard();
+                }
+            };
+
+            const onScanFailure = (error) => {
+                // console.warn(`Stall scan failure: ${error}`);
+            };
+            
+            stallQrScanner.start({ facingMode: "environment" }, config, onScanSuccess, onScanFailure)
+                .catch(err => {
+                    console.error("Stall Scanner start error:", err);
+                    showAlert("Could not start camera.");
+                    loadStallDashboard();
+                });
+        }
+        
+        function buildCartUI(studentBalance) {
+            const cartEl = document.getElementById('stallCart');
+            const menu = appState.currentUser.menu || [];
+            if (menu.length === 0) {
+                cartEl.innerHTML = '<p class="text-yellow-400">You have no menu items configured. Please ask an admin to add them.</p>';
+                document.getElementById('btnStallConfirmPayment').classList.add('hidden'); // Disable payment
+                return;
+            }
+            
+            cartEl.innerHTML = menu.map(item => `
+                <div class="bg-gray-700 p-3 rounded-lg flex items-center justify-between">
+                    <div>
+                        <p class="font-semibold">${item.name}</p>
+                        <p class="text-sm text-blue-300">₹${item.price.toFixed(2)}</p>
+                    </div>
+                    <div class="flex items-center space-x-3">
+                        <button data-id="${item.id}" class="btn-cart-change bg-red-600 w-8 h-8 rounded-full font-bold text-lg">-</button>
+                        <span id="cart-qty-${item.id}" class="text-xl font-bold w-10 text-center">0</span>
+                        <button data-id="${item.id}" class="btn-cart-change bg-green-600 w-8 h-8 rounded-full font-bold text-lg">+</button>
+                    </div>
+                </div>
+            `).join('');
+            
+            // Add event listeners to new buttons
+            document.querySelectorAll('.btn-cart-change').forEach(btn => {
+                btn.onclick = (e) => {
+                    const id = e.target.dataset.id;
+                    const isIncrement = e.target.textContent === '+';
+                    updateCart(id, isIncrement, studentBalance);
+                };
+            });
+            
+            updateCartTotal(studentBalance);
+        }
+        
+        function updateCart(itemId, isIncrement, studentBalance) {
+            let currentQty = appState.stallCart[itemId] || 0;
+            
+            if (isIncrement) {
+                currentQty++;
+            } else {
+                currentQty = Math.max(0, currentQty - 1);
+            }
+            
+            appState.stallCart[itemId] = currentQty;
+            
+            if (currentQty === 0) {
+                delete appState.stallCart[itemId];
+            }
+            
+            const qtyEl = document.getElementById(`cart-qty-${itemId}`);
+            if (qtyEl) {
+                qtyEl.textContent = currentQty;
+            }
+            updateCartTotal(studentBalance);
+        }
+        
+        function updateCartTotal(studentBalance) {
+            const totalEl = document.getElementById('stallCartTotal');
+            const confirmBtn = document.getElementById('btnStallConfirmPayment');
+            const menuMap = new Map(appState.currentUser.menu.map(i => [i.id, i]));
+            
+            let total = 0;
+            for (const [itemId, quantity] of Object.entries(appState.stallCart)) {
+                total += (menuMap.get(itemId)?.price || 0) * quantity;
+            }
+            
+            totalEl.textContent = `₹${total.toFixed(2)}`;
+            
+            if (total > studentBalance) {
+                totalEl.classList.add('text-red-500');
+                totalEl.classList.remove('text-green-400');
+                confirmBtn.disabled = true;
+                confirmBtn.classList.add('opacity-50', 'cursor-not-allowed');
+            } else {
+                totalEl.classList.remove('text-red-500');
+                totalEl.classList.add('text-green-400');
+                confirmBtn.disabled = (total === 0); // Also disable if total is 0
+                if (total === 0) {
+                    confirmBtn.classList.add('opacity-50', 'cursor-not-allowed');
+                } else {
+                    confirmBtn.classList.remove('opacity-50', 'cursor-not-allowed');
+                }
+            }
+        }
+        
+        async function processPayment() {
+            const menuMap = new Map(appState.currentUser.menu.map(i => [i.id, i]));
+            let totalAmount = 0;
+            const cartItems = [];
+            
+            for (const [itemId, quantity] of Object.entries(appState.stallCart)) {
+                if (quantity > 0) {
+                    const item = menuMap.get(itemId);
+                    totalAmount += item.price * quantity;
+                    cartItems.push({
+                        id: itemId,
+                        name: item.name,
+                        price: item.price,
+                        quantity: quantity
+                    });
+                }
+            }
+            
+            if (totalAmount === 0) {
+                showAlert('Cart is empty. Please add items.');
+                return;
+            }
+            
+            showLoading('Processing Payment...');
+            
+            const studentId = appState.scannedStudentId;
+            const stallId = appState.currentUser.id;
+            
+            const studentDocRef = doc(usersRef(), studentId);
+            
+            try {
+                await runTransaction(db, async (transaction) => {
+                    const studentDoc = await transaction.get(studentDocRef);
+                    if (!studentDoc.exists()) {
+                        throw new Error("Student not found.");
+                    }
+                    
+                    const studentBalance = studentDoc.data().balance;
+                    if (studentBalance < totalAmount) {
+                        throw new Error("Insufficient student balance.");
+                    }
+                    
+                    // 1. Deduct from student
+                    transaction.update(studentDocRef, {
+                        balance: increment(-totalAmount)
+                    });
+                    
+                    // 2. Create transaction log
+                    const newTxRef = doc(transactionsRef()); // Auto-ID
+                    transaction.set(newTxRef, {
+                        studentId: studentId,
+                        studentName: document.getElementById('stallPaymentStudentName').textContent, // From UI
+                        stallId: stallId,
+                        stallName: appState.currentUser.name,
+                        amount: totalAmount,
+                        items: cartItems,
+                        type: 'purchase',
+                        timestamp: serverTimestamp()
+                    });
+                });
+                
+                showAlert('Payment Successful!');
+                loadStallDashboard(); // Go back to stall dash
+                
+            } catch (error) {
+                console.error("Payment Error:", error);
+                showAlert(error.message);
+                hideLoading();
+            }
+        }
+
+    </script>
+
+    <style>
+        /* Simple spinner */
+        .spinner {
+            border-top-color: #3498db;
+            animation: spin 1s linear infinite;
+        }
+        @keyframes spin {
+            to { transform: rotate(360deg); }
+        }
+    </style>
+</head>
+<body class="bg-gray-900 text-white font-sans antialiased">
+
+    <!-- Main Container -->
+    <div class="container mx-auto p-4 max-w-lg min-h-screen">
+
+        <!-- VIEW: Home -->
+        <div id="homeView" class="">
+            <header class="text-center my-12">
+                <h1 class="text-4xl font-bold text-blue-400 mb-2">Smart QR Event Wallet</h1>
+                <p class="text-lg text-gray-300">School Fest 2025</p>
+            </header>
+            
+            <main class="space-y-6">
+                <button id="btnAdminLogin" class="w-full bg-red-600 hover:bg-red-700 text-white font-bold py-4 px-6 rounded-lg shadow-lg text-lg transition-all">
+                    Admin Login
+                </button>
+                <button id="btnStallLogin" class="w-full bg-green-600 hover:bg-green-700 text-white font-bold py-4 px-6 rounded-lg shadow-lg text-lg transition-all">
+                    Stall Login (Scan QR)
+                </button>
+                <button id="btnStudentLogin" class="w-full bg-blue-600 hover:bg-blue-700 text-white font-bold py-4 px-6 rounded-lg shadow-lg text-lg transition-all">
+                    Student Login (Scan QR)
+                </button>
+            </main>
+        </div>
+
+        <!-- VIEW: Admin Login -->
+        <div id="adminLoginView" class="hidden">
+            <header class="my-8">
+                <button id="btnAdminLoginBack" class="text-blue-400 hover:text-blue-300">&larr; Back to Home</button>
+                <h1 class="text-3xl font-bold text-center text-red-400 mt-4">Admin Login</h1>
+            </header>
+            
+            <main class="space-y-4 bg-gray-800 p-6 rounded-lg shadow-xl">
+                <div>
+                    <label for="adminPassword" class="block text-sm font-medium text-gray-300 mb-1">Password</label>
+                    <input type="password" id="adminPassword" class="w-full bg-gray-700 text-white border border-gray-600 rounded-lg p-3 focus:ring-red-500 focus:border-red-500" placeholder="••••••••">
+                </div>
+                <button id="btnAdminLoginSubmit" class="w-full bg-red-600 hover:bg-red-700 text-white font-bold py-3 px-4 rounded-lg shadow-lg transition-all">
+                    Login
+                </button>
+            </main>
+        </div>
+
+        <!-- VIEW: Admin Dashboard -->
+        <div id="adminDashboardView" class="hidden">
+            <header class="my-8 flex justify-between items-center">
+                <h1 class="text-3xl font-bold text-red-400">Admin Dashboard</h1>
+                <button id="btnAdminLogout" class="bg-gray-700 hover:bg-gray-600 text-white font-medium py-2 px-4 rounded-lg text-sm transition-all">Logout</button>
+            </header>
+            
+            <!-- Admin Tabs -->
+            <div class="mb-4 border-b border-gray-700">
+                <nav class="flex space-x-1" aria-label="Tabs">
+                    <button data-target="panel-users" class="admin-tab bg-blue-600 text-white px-4 py-3 rounded-t-lg font-medium text-sm">Manage Users</button>
+                    <button data-target="panel-stalls" class="admin-tab bg-gray-700 text-gray-300 px-4 py-3 rounded-t-lg font-medium text-sm">Manage Stalls</button>
+                    <button data-target="panel-reports" class="admin-tab bg-gray-700 text-gray-300 px-4 py-3 rounded-t-lg font-medium text-sm">Reports</button>
+                </nav>
+            </div>
+            
+            <main class="space-y-6">
+                <!-- Panel 1: Manage Users (Students & Stalls) -->
+                <div id="panel-users" class="admin-tab-panel space-y-6">
+                    <!-- Generate Student -->
+                    <section class="bg-gray-800 p-6 rounded-lg shadow-xl">
+                        <h2 class="text-2xl font-semibold mb-4 text-blue-300">Generate Student</h2>
+                        <div class="space-y-4">
+                            <input type="text" id="adminStudentName" class="w-full bg-gray-700 text-white border border-gray-600 rounded-lg p-3" placeholder="Student Name">
+                            <button id="btnAdminGenerateStudent" class="w-full bg-blue-600 hover:bg-blue-700 text-white font-bold py-3 px-4 rounded-lg shadow-lg transition-all">
+                                Generate Student QR
+                            </button>
+                            <div id="adminStudentQRContainer" class="bg-white p-4 rounded-lg text-black text-center mt-4">
+                                <!-- QR code will appear here -->
+                            </div>
+                            <h3 class="text-xl font-semibold mt-6 mb-2">Current Students</h3>
+                            <div id="adminStudentList" class="space-y-2 max-h-60 overflow-y-auto">
+                                <!-- Student list loads here -->
+                            </div>
+                        </div>
+                    </section>
+                    
+                    <!-- Generate Stall -->
+                    <section class="bg-gray-800 p-6 rounded-lg shadow-xl">
+                        <h2 class="text-2xl font-semibold mb-4 text-green-300">Generate Stall</h2>
+                        <div class="space-y-4">
+                            <input type="text" id="adminStallName" class="w-full bg-gray-700 text-white border border-gray-600 rounded-lg p-3" placeholder="Stall Name (e.g., Pizza Corner)">
+                            <button id="btnAdminGenerateStall" class="w-full bg-green-600 hover:bg-green-700 text-white font-bold py-3 px-4 rounded-lg shadow-lg transition-all">
+                                Generate Stall QR
+                            </button>
+                            <div id="adminStallQRContainer" class="bg-white p-4 rounded-lg text-black text-center mt-4">
+                                <!-- QR code will appear here -->
+                            </div>
+                        </div>
+                    </section>
+                </div>
+                
+                <!-- Panel 2: Manage Stalls (Menus) -->
+                <div id="panel-stalls" class="admin-tab-panel hidden space-y-6">
+                    <section class="bg-gray-800 p-6 rounded-lg shadow-xl">
+                        <h2 class="text-2xl font-semibold mb-4 text-green-300">Add Menu Item</h2>
+                        <div class="space-y-4">
+                            <div>
+                                <label class="block text-sm font-medium text-gray-300 mb-1">Select Stall</label>
+                                <select id="adminStallSelect" class="w-full bg-gray-700 text-white border border-gray-600 rounded-lg p-3"></select>
+                            </div>
+                            <input type="text" id="adminItemName" class="w-full bg-gray-700 text-white border border-gray-600 rounded-lg p-3" placeholder="Item Name (e.g., Veg Pizza)">
+                            <input type="number" id="adminItemPrice" class="w-full bg-gray-700 text-white border border-gray-600 rounded-lg p-3" placeholder="Item Price (e.g., 100)">
+                            <button id="btnAdminAddMenuItem" class="w-full bg-green-600 hover:bg-green-700 text-white font-bold py-3 px-4 rounded-lg shadow-lg transition-all">
+                                Add Item
+                            </button>
+                        </div>
+                    </section>
+                    
+                    <section>
+                        <h2 class="text-2xl font-semibold mb-4">Stall Menus</h2>
+                        <div id="adminStallList" class="space-y-4">
+                            <!-- Stall menus load here -->
+                        </div>
+                    </section>
+                </div>
+                
+                <!-- Panel 3: Reports -->
+                <div id="panel-reports" class="admin-tab-panel hidden space-y-6">
+                    <section class="bg-gray-800 p-6 rounded-lg shadow-xl space-y-4">
+                        <h2 class="text-2xl font-semibold mb-4 text-yellow-300">Event Financials</h2>
+                        <div class="flex justify-between bg-gray-700 p-4 rounded-lg">
+                            <span class="text-lg">Total Recharged:</span>
+                            <span id="adminTotalRecharged" class="text-lg font-bold text-green-400">₹0.00</span>
+                        </div>
+                        <div class="flex justify-between bg-gray-700 p-4 rounded-lg">
+                            <span class="text-lg">Total Sales:</span>
+                            <span id="adminTotalSales" class="text-lg font-bold text-red-400">₹0.00</span>
+                        </div>
+                    </section>
+                    
+                    <section class="bg-gray-800 p-6 rounded-lg shadow-xl">
+                        <h3 class="text-xl font-semibold mb-2">Sales per Stall</h3>
+                        <div id="adminStallSalesSummary" class="space-y-2">
+                            <!-- Stall sales summary loads here -->
+                        </div>
+                    </section>
+                    
+                    <section>
+                        <h2 class="text-2xl font-semibold mb-4">All Transactions</h2>
+                        <div id="adminTransactionList" class="space-y-3 max-h-96 overflow-y-auto">
+                            <!-- Transaction list loads here -->
+                        </div>
+                    </section>
+                </div>
+            </main>
+        </div>
+
+        <!-- VIEW: Scanner -->
+        <div id="scannerView" class="hidden">
+            <header class="my-8">
+                <h1 id="scannerTitle" class="text-3xl font-bold text-center text-yellow-300">Scan QR Code</h1>
+            </header>
+            
+            <main class="space-y-4">
+                <div id="qr-reader" class="w-full rounded-lg overflow-hidden border-4 border-gray-700"></div>
+                <button id="btnCancelScan" class="w-full bg-gray-700 hover:bg-gray-600 text-white font-bold py-3 px-4 rounded-lg shadow-lg transition-all">
+                    Cancel
+                </button>
+            </main>
+        </div>
+
+        <!-- VIEW: Student Dashboard -->
+        <div id="studentDashboardView" class="hidden">
+            <header class="my-8">
+                <button id="btnStudentBack" class="text-blue-400 hover:text-blue-300 mb-4">&larr; Back to Home (Logout)</button>
+                <div class="flex justify-between items-center">
+                    <div>
+                        <h1 class="text-3xl font-bold text-blue-400">Welcome, <span id="studentName"></span></h1>
+                        <p id="studentIdDisplay" class="text-sm text-gray-400"></p>
+                        <p class="text-lg text-gray-300 mt-4">Your Balance:</p>
+                        <p id="studentBalance" class="text-5xl font-extrabold text-green-400">₹0.00</p>
+                    </div>
+                    <button id="btnStudentLogout" class="bg-gray-700 hover:bg-gray-600 text-white font-medium py-2 px-4 rounded-lg text-sm transition-all self-start">Logout</button>
+                </div>
+            </header>
+            
+            <main class="space-y-8">
+                <!-- Recharge -->
+                <section class="bg-gray-800 p-6 rounded-lg shadow-xl space-y-4">
+                    <h2 class="text-2xl font-semibold mb-4 text-green-300">Recharge Wallet</h2>
+                    <input type="number" id="studentRechargeAmount" class="w-full bg-gray-700 text-white border border-gray-600 rounded-lg p-3" placeholder="Enter Amount (e.g., 500)">
+                    <button id="btnStudentRecharge" class="w-full bg-green-600 hover:bg-green-700 text-white font-bold py-3 px-4 rounded-lg shadow-lg transition-all">
+                        Go to Payment
+                    </button>
+                </section>
+                
+                <!-- Stalls & Prices -->
+                <section>
+                    <h2 class="text-2xl font-semibold mb-4">Stalls & Prices</h2>
+                    <div id="studentStallList" class="space-y-4">
+                        <!-- Stall list loads here -->
+                    </div>
+                </section>
+                
+                <!-- Transaction History -->
+                <section>
+                    <h2 class="text-2xl font-semibold mb-4">Transaction History</h2>
+                    <div id="studentTransactionList" class="space-y-3 max-h-96 overflow-y-auto">
+                        <!-- History loads here -->
+                    </div>
+                </section>
+            </main>
+        </div>
+        
+        <!-- VIEW: Recharge (Mock UPI) -->
+        <div id="rechargeView" class="hidden">
+            <header class="my-8">
+                <button id="btnRechargeBack" class="text-blue-400 hover:text-blue-300 mb-4">&larr; Back to Dashboard</button>
+                <h1 class="text-3xl font-bold text-center text-yellow-300 mt-4">Mock UPI Payment</h1>
+            </header>
+            
+            <main class="space-y-6 bg-gray-800 p-8 rounded-lg shadow-xl text-center">
+                <p class="text-lg text-gray-300">You are about to pay:</p>
+                <p id="rechargeAmountDisplay" class="text-6xl font-extrabold text-white">₹0.00</p>
+                <p class="text-sm text-gray-400">This is a mock payment screen. Click "Successful" to add funds to your wallet.</p>
+                
+                <button id="btnPaymentSuccess" class="w-full bg-green-600 hover:bg-green-700 text-white font-bold py-4 px-6 rounded-lg shadow-lg text-lg transition-all">
+                    Payment Successful
+                </button>
+                <button id="btnPaymentFail" class="w-full bg-red-600 hover:bg-red-700 text-white font-bold py-3 px-4 rounded-lg shadow-lg transition-all">
+                    Payment Failed
+                </button>
+            </main>
+        </div>
+
+        <!-- VIEW: Stall Dashboard -->
+        <div id="stallDashboardView" class="hidden">
+            <header class="my-8">
+                <button id="btnStallBack" class="text-blue-400 hover:text-blue-300 mb-4">&larr; Back to Home (Logout)</button>
+                <div class="flex justify-between items-center">
+                    <div>
+                        <h1 class="text-3xl font-bold text-green-400"><span id="stallName"></span></h1>
+                        <p class="text-lg text-gray-300">Total Sales:</p>
+                        <p id="stallTotalSales" class="text-5xl font-extrabold text-white">₹0.00</p>
+                    </div>
+                    <button id="btnStallLogout" class="bg-gray-700 hover:bg-gray-600 text-white font-medium py-2 px-4 rounded-lg text-sm transition-all self-start">Logout</button>
+
+                </div>
+            </header>
+            
+            <main class="space-y-8">
+                <!-- Scan Button -->
+                <section>
+                    <button id="btnStallScanToPay" class="w-full bg-blue-600 hover:bg-blue-700 text-white font-bold py-6 px-6 rounded-lg shadow-lg text-2xl transition-all">
+                        Scan Student QR to Pay
+                    </button>
+                </section>
+                
+                <!-- My Menu -->
+                <section class="bg-gray-800 p-6 rounded-lg shadow-xl">
+                    <h2 class="text-2xl font-semibold mb-4">My Menu</h2>
+                    <div id="stallMenuList" class="space-y-2">
+                        <!-- My menu loads here -->
+                    </div>
+                </section>
+                
+                <!-- Sales History -->
+                <section>
+                    <h2 class="text-2xl font-semibold mb-4">Sales History</h2>
+                    <div id="stallSaleList" class="space-y-3 max-h-96 overflow-y-auto">
+                        <!-- Sales history loads here -->
+                    </div>
+                </section>
+            </main>
+        </div>
+        
+        <!-- VIEW: Stall Payment -->
+        <div id="stallPaymentView" class="hidden">
+            <header class="my-8">
+                <h1 class="text-3xl font-bold text-center text-blue-400">Process Payment</h1>
+            </header>
+            
+            <main class="space-y-6">
+                <!-- Scanner Section -->
+                <div id="stall-qr-reader-container">
+                    <p class="text-center text-lg text-yellow-300 mb-4">Scanning for Student QR...</p>
+                    <div id="stall-qr-reader" class="w-full rounded-lg overflow-hidden border-4 border-gray-700"></div>
+                </div>
+                
+                <!-- Payment Details Section (hidden initially) -->
+                <div id="stallPaymentDetails" class="hidden space-y-6">
+                    <section class="bg-gray-800 p-6 rounded-lg shadow-xl">
+                        <h2 class="text-2xl font-semibold mb-2">Student Details</h2>
+                        <div class="flex justify-between items-center">
+                            <span id="stallPaymentStudentName" class="text-xl"></span>
+                            <span id="stallPaymentStudentBalance" class="text-xl font-bold text-green-400"></span>
+                        </div>
+                    </section>
+                    
+                    <section class="bg-gray-800 p-6 rounded-lg shadow-xl">
+                        <h2 class="text-2xl font-semibold mb-4">Create Order</h2>
+                        <div id="stallCart" class="space-y-4">
+                            <!-- Cart UI builds here -->
+                        </div>
+                    </section>
+                    
+                    <section class="text-center">
+                        <p class="text-lg text-gray-300">Total Amount:</p>
+                        <p id="stallCartTotal" class="text-6xl font-extrabold text-green-400">₹0.00</p>
+                    </section>
+                </div>
+                
+                <!-- Action Buttons -->
+                <button id="btnStallConfirmPayment" class="hidden w-full bg-green-600 hover:bg-green-700 text-white font-bold py-4 px-6 rounded-lg shadow-lg text-lg transition-all">
+                    Confirm Payment
+                </button>
+                <button id="btnStallPaymentCancel" class="w-full bg-gray-700 hover:bg-gray-600 text-white font-bold py-3 px-4 rounded-lg shadow-lg transition-all">
+                    Cancel
+                </button>
+            </main>
+        </div>
+
+        <!-- VIEW: Loading Overlay -->
+        <div id="loadingView" class="hidden fixed inset-0 bg-black bg-opacity-75 flex flex-col items-center justify-center z-50">
+            <div class="spinner w-16 h-16 border-4 border-gray-600 rounded-full"></div>
+            <p id="loadingMessage" class="text-white text-xl mt-4">Loading...</p>
+        </div>
+
+        <!-- Modal (Alert) -->
+        <div id="modal" class="hidden fixed inset-0 bg-black bg-opacity-75 flex items-center justify-center z-50 p-4">
+            <div class="bg-white text-black p-6 rounded-lg shadow-xl max-w-sm w-full">
+                <p id="modalMessage" class="text-lg mb-4">This is an alert message.</p>
+                <button id="modalButton" class="w-full bg-blue-600 hover:bg-blue-700 text-white font-bold py-2 px-4 rounded-lg">
+                    OK
+                </button>
+            </div>
+        </div>
+
+    </div>
+</body>
+</html>
+
