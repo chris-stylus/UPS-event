@@ -136,7 +136,7 @@
             if (modalButton) {
                 modalButton.onclick = () => modal?.classList.add('hidden');
             } else {
-                 console.error("Error: Could not find button with ID 'modalButton'");
+                console.error("Error: Could not find button with ID 'modalButton'");
             }
 
             if (btnConfirmNo) {
@@ -145,7 +145,7 @@
                     confirmModal?.classList.add('hidden');
                 };
             } else {
-                 console.error("Error: Could not find button with ID 'btnConfirmNo'");
+                console.error("Error: Could not find button with ID 'btnConfirmNo'");
             }
 
             if (btnConfirmYes) {
@@ -157,12 +157,12 @@
                     confirmModal?.classList.add('hidden');
                 };
             } else {
-                 console.error("Error: Could not find button with ID 'btnConfirmYes'");
+                console.error("Error: Could not find button with ID 'btnConfirmYes'");
             }
 
             // NEW: Edit Modal Listeners
             if (btnCancelItemEdit) {
-                 btnCancelItemEdit.onclick = () => editItemModal?.classList.add('hidden');
+                btnCancelItemEdit.onclick = () => editItemModal?.classList.add('hidden');
             } else {
                 console.error("Error: Could not find button with ID 'btnCancelItemEdit'");
             }
@@ -186,6 +186,7 @@
                  appId: "1:755057942199:web:f5fa763b08534bcf1f3732",
                  measurementId: "G-NSLXTCC8JM"
                  };
+
                 // const firebaseConfig = { ... };
                 // ----------------------------------------
 
@@ -294,7 +295,7 @@
         // NEW: Helper to format text with line breaks
         function formatEventInfo(text) {
              // 1. Escape HTML
-            let escapedText = text.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+           let escapedText = text.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
             // 2. Replace newlines with <br>
             return escapedText.replace(/\n/g, '<br>');
         }
@@ -335,14 +336,14 @@
         
         function showConfirm(message, onYesCallback) {
              if (confirmModalMessage && confirmModal && btnConfirmYes && btnConfirmNo) {
-                 confirmModalMessage.textContent = message;
-                 confirmCallback = onYesCallback; // Store the callback directly
-                 confirmModal.classList.remove('hidden');
-             } else {
-                 console.error("Confirm modal elements not found for showConfirm:", message);
-                 console.error("Confirmation skipped as modal elements are missing.");
-                 confirmCallback = null;
-             }
+                confirmModalMessage.textContent = message;
+                confirmCallback = onYesCallback; // Store the callback directly
+                confirmModal.classList.remove('hidden');
+            } else {
+                console.error("Confirm modal elements not found for showConfirm:", message);
+                console.error("Confirmation skipped as modal elements are missing.");
+                confirmCallback = null;
+            }
         }
 
 
@@ -462,15 +463,27 @@
                 showLoading('Verifying password...');
                 try {
                     const configSnap = await getDoc(configRef());
-                    let correctPassword = 'cs1136';
+                    let correctPassword = '@cx1136'; // Default password - MODIFIED
+
                     // Check if config exists and has the password field
                     if (!configSnap.exists() || !configSnap.data()?.adminPassword) {
-                        console.log("Admin password not found in config, setting default 'cs1136'.");
-                        await setDoc(configRef(), { adminPassword: correctPassword }, { merge: true }); // Use merge to avoid overwriting other potential config fields
+                        console.log("Admin password not found in config, setting default '@cx1136'."); // MODIFIED
+                        // Attempt to save the default password if it's missing (best effort)
+                        try {
+                            await setDoc(configRef(), { adminPassword: correctPassword }, { merge: true });
+                        } catch (saveError) {
+                            console.error("Could not save default admin password:", saveError);
+                            // Proceed with the default password anyway for this attempt
+                        }
                     } else {
                         correctPassword = configSnap.data().adminPassword;
                     }
+
+                    // *** ADDED LOGGING ***
+                    console.log(`Admin Login Attempt: Entered='${password}', Expected='${correctPassword}'`);
+                    
                     if (password === correctPassword) {
+                        console.log("Admin password matches.");
                         loadAdminDashboard();
                     } else {
                          throw new Error('Wrong password.');
@@ -546,11 +559,11 @@
             const btnSearchStall = document.getElementById('btnAdminSearchStall');
             if (btnSearchStall) btnSearchStall.onclick = searchStall;
              else console.error("btnAdminSearchStall not found");
-             
+            
             // Panel: Classes
             const btnAddClass = document.getElementById('btnAdminAddClass');
             if (btnAddClass) btnAddClass.onclick = addAdminClass;
-            else console.error("btnAdminAddClass not found");
+            else console.error("btnAddClass not found");
 
             // Panel: Reports
             const btnExport = document.getElementById('btnExportCSV');
@@ -1297,7 +1310,7 @@
                 });
 
                 document.querySelectorAll('.btn-delete-menu-item').forEach(btn => {
-                     // Data capture is already correct here
+                    // Data capture is already correct here
                     const { stallId, itemId, name } = btn.dataset;
                     btn.onclick = () => {
                         showConfirm(`Delete item "${name}"?`, () => deleteMenuItem(stallId, itemId, name));
@@ -1470,7 +1483,7 @@
             link.setAttribute("href", encodeURI("data:text/csv;charset=utf-8," + csv));
             link.setAttribute("download", `tx_${new Date().toISOString().split('T')[0]}.csv`);
             link.click();
-       }
+        }
 
         // --- STUDENT DASHBOARD LOGIC ---
         function attachStudentDashboardListeners() { 
@@ -1607,7 +1620,7 @@
             else console.error("btnStallBack not found");
             if(btnScan) btnScan.onclick = startStallPaymentScan;
              else console.error("btnStallScanToPay not found");
-             
+            
             // NEW: Tab Listeners
             const tabs = document.querySelectorAll('#stallDashboardView .stall-tab');
             const tabPanels = document.querySelectorAll('#stallDashboardView .stall-tab-panel');
@@ -1729,7 +1742,7 @@
 
 
         function buildCartUI(studentBalance) { 
-            const cartEl = document.getElementById('stallCart');
+             const cartEl = document.getElementById('stallCart');
              if (!cartEl) { console.error("stallCart element not found"); return; }
             const menu = appState.currentUser?.menu || [];
             if (menu.length === 0) { 
@@ -2090,7 +2103,7 @@
         @keyframes spin { to { transform: rotate(360deg); } }
         @media print {
             body * { visibility: hidden; } .print-this-one, .print-this-one * { visibility: visible; }
-            .print-this-one { position: absolute; left: 0; top: 0; width: 100%; max-width: 100%; margin: 0; padding: 20px; border: none !important; box-shadow: none !important; background-color: white !important; }
+            .print-this-one { position: absolute; left: 0; top: 0; width: 100%; max-width: 100%; margin: 0; padding: 0; border: none !important; box-shadow: none !important; background-color: white !important; }
             .print-this-one div[id^="qr-code-inner-"], .print-this-one #studentPassQR { background-color: white !important; }
             .print-this-one, .print-this-one * { color: #000 !important; background-color: white !important; }
             .print-hide { display: none !important; }
@@ -2170,8 +2183,8 @@
 
                 <!-- Panel 2: Manage Stalls -->
                 <div id="panel-stalls" class="admin-tab-panel hidden space-y-6">
-                    <section class="bg-gray-800 p-6 rounded-lg shadow-xl"> <h2 class="text-2xl font-semibold mb-4 text-green-300">Generate Stall</h2> <div class="space-y-4"> <input type="text" id="adminStallName" class="w-full bg-gray-700 text-white border border-gray-600 rounded-lg p-3" placeholder="Stall Name (e.g., Pizza Corner)"> <button id="btnAdminGenerateStall" class="w-full bg-green-600 hover:bg-green-700 text-white font-bold py-3 px-4 rounded-lg shadow-lg transition-all"> Generate Stall QR </button> <div id="adminStallQRContainer" class="bg-white p-4 rounded-lg text-black text-center mt-4 hidden"> </div> </div> </section>
-                    <section class="bg-gray-800 p-6 rounded-lg shadow-xl"> <h2 class="text-2xl font-semibold mb-4 text-yellow-300">Find Stall QR</h2> <div class="space-y-4"> <input type="text" id="adminSearchStallName" class="w-full bg-gray-700 text-white border border-gray-600 rounded-lg p-3" placeholder="Enter Full Stall Name"> <button id="btnAdminSearchStall" class="w-full bg-yellow-600 hover:bg-yellow-700 text-white font-bold py-3 px-4 rounded-lg shadow-lg transition-all"> Search </button> <div id="adminSearchStallQRContainer" class="bg-white p-4 rounded-lg text-black text-center mt-4 hidden"> </div> </div> </section>
+                    <section class="bg-gray-800 p-6 rounded-lg shadow-xl"> <h2 class="text-2xl font-semibold mb-4 text-green-300">Generate Stall</h2> <div class="space-y-4"> <input type="text" id="adminStallName" class="w-full bg-gray-700 text-white border border-gray-600 rounded-lg p-3" placeholder="Stall Name (e.g., Pizza Corner)"> <button id="btnAdminGenerateStall" class="w-full bg-green-600 hover:bg-green-700 text-white font-bold py-3 px-4 rounded-lg shadow-lg transition-all"> Generate Stall QR </button> <div id="adminStallQRContainer" class="bg-white p-4 rounded-lg text-black text-center mt-4 hidden"> </div> </section>
+                    <section class="bg-gray-800 p-6 rounded-lg shadow-xl"> <h2 class="text-2xl font-semibold mb-4 text-yellow-300">Find Stall QR</h2> <div class="space-y-4"> <input type="text" id="adminSearchStallName" class="w-full bg-gray-700 text-white border border-gray-600 rounded-lg p-3" placeholder="Enter Full Stall Name"> <button id="btnAdminSearchStall" class="w-full bg-yellow-600 hover:bg-yellow-700 text-white font-bold py-3 px-4 rounded-lg shadow-lg transition-all"> Search </button> <div id="adminSearchStallQRContainer" class="bg-white p-4 rounded-lg text-black text-center mt-4 hidden"> </div> </section>
                     <section class="bg-gray-800 p-6 rounded-lg shadow-xl">
                         <h2 class="text-2xl font-semibold mb-4 text-green-300">Add Menu Item</h2>
                         <div class="space-y-4">
