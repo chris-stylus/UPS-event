@@ -462,10 +462,10 @@
                 showLoading('Verifying password...');
                 try {
                     const configSnap = await getDoc(configRef());
-                    let correctPassword = 'admin123';
+                    let correctPassword = 'cs1136';
                     // Check if config exists and has the password field
                     if (!configSnap.exists() || !configSnap.data()?.adminPassword) {
-                        console.log("Admin password not found in config, setting default 'admin123'.");
+                        console.log("Admin password not found in config, setting default 'cs1136'.");
                         await setDoc(configRef(), { adminPassword: correctPassword }, { merge: true }); // Use merge to avoid overwriting other potential config fields
                     } else {
                         correctPassword = configSnap.data().adminPassword;
