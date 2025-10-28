@@ -346,7 +346,7 @@
                     // Only re-render if the admin tab is active to avoid unnecessary work
                     const eventPanel = document.getElementById('panel-event');
                     if (eventPanel && !eventPanel.classList.contains('hidden')) {
-                         renderAdminVotingConfig();
+                        renderAdminVotingConfig();
                     }
                 } 
                 // Fix: Always call renderVotingCategories for student view, the component itself checks for visibility
@@ -366,9 +366,9 @@
         // Helper to format text with line breaks
         function formatEventInfo(text) {
              // 1. Escape HTML
-            let escapedText = text.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
-            // 2. Replace newlines with <br>
-            return escapedText.replace(/\n/g, '<br>');
+           let escapedText = text.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+           // 2. Replace newlines with <br>
+           return escapedText.replace(/\n/g, '<br>');
         }
 
 
@@ -565,8 +565,8 @@
                             loadAdminDashboard();
                         } catch (e) {
                              console.error("Failed to load admin dashboard:", e);
-                             showAlert("Login successful, but failed to load dashboard view.");
-                             hideLoading();
+                            showAlert("Login successful, but failed to load dashboard view.");
+                            hideLoading();
                         }
                     } else {
                         throw new Error('Wrong password.');
@@ -1233,19 +1233,19 @@
                     <div class="flex items-center space-x-2 flex-shrink-0 ml-2">
                         ${isAdminView ? `
                         <input type="number" value="${item.stock || 0}" min="0" 
-                                 class="admin-stock-input bg-gray-700 text-white w-14 text-center rounded px-1 py-0.5 border border-gray-500 focus:ring-blue-500 focus:border-blue-500" 
-                                 data-item-id="${item.id}" data-stall-id="${stallId}">
+                                class="admin-stock-input bg-gray-700 text-white w-14 text-center rounded px-1 py-0.5 border border-gray-500 focus:ring-blue-500 focus:border-blue-500" 
+                                data-item-id="${item.id}" data-stall-id="${stallId}">
                         <button class="btn-edit-menu-item bg-blue-600 hover:bg-blue-700 text-white px-2 py-1 rounded text-xs"
-                                 data-stall-id="${stallId}"
-                                 data-item-id="${item.id}"
-                                 data-name="${escapeHTML(item.name)}"
-                                 data-price="${item.price}">
+                                data-stall-id="${stallId}"
+                                data-item-id="${item.id}"
+                                data-name="${escapeHTML(item.name)}"
+                                data-price="${item.price}">
                             Edit
                         </button>
                         <button class="btn-delete-menu-item bg-red-600 hover:bg-red-700 text-white px-2 py-1 rounded text-xs"
-                                 data-stall-id="${stallId}"
-                                 data-item-id="${item.id}"
-                                 data-name="${escapeHTML(item.name)}">
+                                data-stall-id="${stallId}"
+                                data-item-id="${item.id}"
+                                data-name="${escapeHTML(item.name)}">
                             Del
                         </button>
                         ` : ''}
@@ -1398,14 +1398,14 @@
                 listEl.innerHTML = snapshot.docs.map(doc => {
                     const stall = doc.data();
                     return `<div class="bg-gray-700 p-4 rounded-lg">
-                                 <div class="flex justify-between items-center mb-2">
-                                     <h4 class="text-lg font-semibold">${stall.name}</h4>
-                                     <button data-id="${stall.ownerId}" data-name="${stall.name}" class="btn-delete-stall bg-red-600 hover:bg-red-700 text-white px-3 py-1 rounded-lg text-sm">Delete</button>
-                                 </div>
-                                 <div id="menu-list-${stall.ownerId}" class="mt-2 space-y-1">
-                                     ${renderMenuList(stall.menu, doc.id, true)} 
-                                 </div>
-                             </div>`;
+                                    <div class="flex justify-between items-center mb-2">
+                                        <h4 class="text-lg font-semibold">${stall.name}</h4>
+                                        <button data-id="${stall.ownerId}" data-name="${stall.name}" class="btn-delete-stall bg-red-600 hover:bg-red-700 text-white px-3 py-1 rounded-lg text-sm">Delete</button>
+                                    </div>
+                                    <div id="menu-list-${stall.ownerId}" class="mt-2 space-y-1">
+                                        ${renderMenuList(stall.menu, doc.id, true)} 
+                                    </div>
+                                </div>`;
                 }).join('');
 
                 selectEl.innerHTML = snapshot.docs.map(doc => `<option value="${doc.id}">${doc.data().name}</option>`).join('');
@@ -2245,10 +2245,10 @@
              if (!cartEl) { console.error("stallCart element not found"); return; }
             const menu = appState.currentUser?.menu || [];
             if (menu.length === 0) { 
-                cartEl.innerHTML = '<p class="text-yellow-400">Stall menu not available.</p>'; 
-                const confirmBtn = document.getElementById('btnStallConfirmPayment');
-                if(confirmBtn) confirmBtn.classList.add('hidden');
-                return; 
+                 cartEl.innerHTML = '<p class="text-yellow-400">Stall menu not available.</p>'; 
+                 const confirmBtn = document.getElementById('btnStallConfirmPayment');
+                 if(confirmBtn) confirmBtn.classList.add('hidden');
+                 return; 
             }
             cartEl.innerHTML = menu.map(item => `
                 <div class="bg-gray-700 p-3 rounded-lg flex items-center justify-between">
@@ -2625,6 +2625,7 @@
 
         <!-- VIEW: Home --><div id="homeView" class="">
             <header class="text-center my-12"> <h1 class="text-4xl font-bold text-blue-400 mb-2">Smart QR Event Wallet</h1> <p class="text-lg text-gray-300">Udaya Public School - Annual Fest 2025-26</p> </header>
+            
             <main class="space-y-6"> <button id="btnAdminLogin" class="w-full bg-red-600 hover:bg-red-700 text-white font-bold py-4 px-6 rounded-lg shadow-lg text-lg transition-all">Admin Login</button> <button id="btnStallLogin" class="w-full bg-green-600 hover:bg-green-700 text-white font-bold py-4 px-6 rounded-lg shadow-lg text-lg transition-all">Stall Login (Scan QR)</button> <button id="btnStudentLogin" class="w-full bg-blue-600 hover:bg-blue-700 text-white font-bold py-4 px-6 rounded-lg shadow-lg text-lg transition-all">Student Login (Scan QR)</button> </main>
         </div>
 
@@ -2660,12 +2661,12 @@
                             <div>
                                 <label for="adminStudentBulkUpload" class="block text-sm font-medium text-gray-300 mb-1">Upload CSV File</label>
                                 <input type="file" id="adminStudentBulkUpload" accept=".csv,application/vnd.ms-excel" class="w-full text-sm text-gray-400
-                                     file:mr-4 file:py-2 file:px-4
-                                     file:rounded-lg file:border-0
-                                     file:text-sm file:font-semibold
-                                     file:bg-purple-600 file:text-white
-                                     hover:file:bg-purple-700
-                                     cursor-pointer">
+                                            file:mr-4 file:py-2 file:px-4
+                                            file:rounded-lg file:border-0
+                                            file:text-sm file:font-semibold
+                                            file:bg-purple-600 file:text-white
+                                            hover:file:bg-purple-700
+                                            cursor-pointer">
                                 <p class="text-xs text-gray-400 mt-2">Required format: <code class="bg-gray-700 px-1 rounded">Name,Class</code> (one per line, no header row).</p>
                                 <p class="text-xs text-gray-400">Example: <code class="bg-gray-700 px-1 rounded">John Doe,10-A</code></p>
                             </div>
@@ -2950,11 +2951,11 @@
              <main class="space-y-6"> <div id="admin-recharge-qr-reader-container"> <p class="text-center text-lg text-yellow-300 mb-4">Scanning for Student QR...</p> <div id="admin-recharge-qr-reader" class="w-full rounded-lg overflow-hidden border-4 border-gray-700"></div> </div> <div id="adminRechargeDetails" class="hidden space-y-6"> <section class="bg-gray-800 p-6 rounded-lg shadow-xl"> <h2 class="text-2xl font-semibold mb-2">Student Details</h2> <div class="flex justify-between items-center"> <span id="adminRechargeStudentName" class="text-xl"></span> <span id="adminRechargeStudentBalance" class="text-xl font-bold text-green-400"></span> </div> </section> <section class="bg-gray-800 p-6 rounded-lg shadow-xl"> <h2 class="text-2xl font-semibold mb-4">Enter Amount</h2> <input type="number" id="adminRechargeAmount" class="w-full bg-gray-700 text-white border border-gray-600 rounded-lg p-3 text-2xl" placeholder="e.g., 500"> </section> </div> 
              <!-- MODIFIED Button Layout -->
              <div class="space-y-4">
-                <button id="btnAdminConfirmRecharge" class="hidden w-full bg-green-600 hover:bg-green-700 text-white font-bold py-4 px-6 rounded-lg shadow-lg text-lg transition-all"> Confirm Recharge </button> 
-                <button id="btnAdminConfirmRefund" class="hidden w-full bg-red-600 hover:bg-red-700 text-white font-bold py-4 px-6 rounded-lg shadow-lg text-lg transition-all"> Process Refund </button> 
-                <button id="btnAdminRechargeCancel" class="w-full bg-gray-700 hover:bg-gray-600 text-white font-bold py-3 px-4 rounded-lg shadow-lg transition-all"> Cancel </button> 
+                 <button id="btnAdminConfirmRecharge" class="hidden w-full bg-green-600 hover:bg-green-700 text-white font-bold py-4 px-6 rounded-lg shadow-lg text-lg transition-all"> Confirm Recharge </button> 
+                 <button id="btnAdminConfirmRefund" class="hidden w-full bg-red-600 hover:bg-red-700 text-white font-bold py-4 px-6 rounded-lg shadow-lg text-lg transition-all"> Process Refund </button> 
+                 <button id="btnAdminRechargeCancel" class="w-full bg-gray-700 hover:bg-gray-600 text-white font-bold py-3 px-4 rounded-lg shadow-lg transition-all"> Cancel </button> 
              </div>
-           </main>
+            </main>
         </div>
 
         <!-- VIEW: Loading Overlay --><div id="loadingView" class="hidden fixed inset-0 bg-black bg-opacity-75 flex flex-col items-center justify-center z-50"> <div class="spinner w-16 h-16 border-4 border-gray-600 rounded-full"></div> <p id="loadingMessage" class="text-white text-xl mt-4">Loading...</p> </div>
@@ -2979,7 +2980,18 @@
             </div>
         </div>
 
-        <!-- Global Footer --><footer class="text-center w-full mt-12 mb-4 text-gray-500 text-xs"> <p class="font-semibold">Udaya Public School</p> <p>Mahadev Jharkhandi, Kunraghat, Gorakhpur</p> </footer>
+        <!-- Global Footer -->
+        <footer class="text-center w-full mt-12 mb-4 text-gray-500 text-xs">
+            <!-- NEW: Attribution Block (Moved from homeView) -->
+            <div class="text-center text-sm text-gray-400 p-4 bg-gray-800 rounded-lg shadow-xl border border-gray-700 mb-4 mx-auto max-w-sm">
+                <p class="mb-1 text-xs">© 2025 UPS Event | Designed & Developed by <strong class="text-white">Aditya (IoT Developer)</strong></p>
+                <p class="text-xs">✦ Need a website like this? Contact Aditya (IoT Developer) for web development services.</p>
+                <p class="text-xs mt-1 font-semibold text-blue-400">✉ adityagupta11iot@gmail.com</p>
+            </div>
+            <!-- End NEW: Attribution Block -->
+            <p class="font-semibold">Udaya Public School</p>
+            <p>Mahadev Jharkhandi, Kunraghat, Gorakhpur</p>
+        </footer>
     </div> <!-- End Main Container -->
 </body>
 </html>
