@@ -419,7 +419,13 @@
 
 
         function cleanupListeners() {
-            currentUnsubscribes.forEach(unsub => unsub());
+            currentUnsubscribes.forEach(unsub => {
+                if (typeof unsub === 'function') {
+                    unsub(); // Direct function call for regular listeners
+                } else if (unsub && typeof unsub.unsub === 'function') {
+                    unsub.unsub(); // Call the unsubscribe function inside the wrapper object
+                }
+            });
             currentUnsubscribes = [];
         }
 
@@ -575,12 +581,44 @@
              else console.error("btnAdminLoginSubmit not found");
         }
 
+        // --- NEW GLOBAL REFRESH HANDLERS ---
+
+        function refreshAdminData() {
+            showLoading('Refreshing all admin data...');
+            // Reload all major components of the admin dashboard
+            loadAdminStudents(); 
+            loadAdminStallsAndMenus(); 
+            loadAdminReports(); 
+            loadAdminClasses();
+            loadEventInfo(); // Reloads event info, which triggers voting config load
+            // Note: renderAdminVotingConfig is called inside loadVotingConfig listener.
+            setTimeout(hideLoading, 500); 
+        }
+
+        function refreshStudentData() {
+            showLoading('Refreshing student data...');
+            // Reloads all components (balance, menu list, voting list, history)
+            loadStudentDashboard(); 
+            setTimeout(hideLoading, 500);
+        }
+
+        function refreshStallData() {
+            showLoading('Refreshing stall data...');
+            // Reloads all components (sales, menu, history)
+            loadStallDashboard(); 
+            setTimeout(hideLoading, 500);
+        }
 
         // --- ADMIN DASHBOARD LOGIC ---
         function attachAdminDashboardListeners() {
             const btnLogout = document.getElementById('btnAdminLogout');
             if (btnLogout) btnLogout.onclick = logout;
             else console.error("btnAdminLogout not found");
+
+            const btnRefreshAdmin = document.getElementById('btnAdminRefresh');
+            if (btnRefreshAdmin) btnRefreshAdmin.onclick = refreshAdminData;
+            else console.error("btnAdminRefresh not found");
+
 
             const tabs = document.querySelectorAll('#adminDashboardView .admin-tab');
             const tabPanels = document.querySelectorAll('#adminDashboardView .admin-tab-panel');
@@ -648,6 +686,11 @@
             const btnExport = document.getElementById('btnExportCSV');
             if (btnExport) btnExport.onclick = exportTransactionsToCSV;
             else console.error("btnExportCSV not found");
+
+            // NEW: Report Refresh Button
+            const btnRefreshReports = document.getElementById('btnAdminRefreshReports');
+            if (btnRefreshReports) btnRefreshReports.onclick = () => loadAdminReports();
+            else console.error("btnAdminRefreshReports not found");
             
             // Panel: Event
             const btnSaveEventInfo = document.getElementById('btnAdminSaveEventInfo');
@@ -915,7 +958,8 @@
                 const qrId = `pdf-qr-${user.id}`;
                 
                 // 2. Set the HTML for the current pass
-                renderContainer.innerHTML = getPassHtml(user, qrId);
+                // Ensure the user object contains 'role' for correct styling
+                renderContainer.innerHTML = getPassHtml({ ...user, role: user.role || userType.split('_')[0] }, qrId);
                 
                 // 3. Find the QR element and render the QR code
                 const qrElement = document.getElementById(qrId);
@@ -1455,10 +1499,18 @@
 
 
         function loadAdminReports() {
+            // Clear existing listeners when manually refreshing or navigating to the tab
+            currentUnsubscribes.filter(unsub => unsub.name === 'reports-tx-unsub' || unsub.name === 'reports-users-unsub').forEach(unsub => unsub.unsub());
+
              let allTx = []; let studentMap = new Map();
+            // Note: onSnapshot listeners are used here, making this section reactive, but the explicit call
+            // will ensure the latest state is pulled if the listener somehow lagged or was killed.
             const unsubTx = onSnapshot(query(transactionsRef()), snap => { allTx = snap.docs.map(d=>d.data()); _recalculateAdminReports(allTx, studentMap); }, e => console.error("Error loading transactions:", e));
+            
             const unsubUsers = onSnapshot(query(usersRef(), where('role', '==', 'student')), snap => { studentMap = new Map(snap.docs.map(d=>[d.id, d.data().class || 'N/A'])); _recalculateAdminReports(allTx, studentMap); }, e => console.error("Error loading users for report:", e));
-            currentUnsubscribes.push(unsubTx, unsubUsers);
+            
+            // Store unsubscribe functions inside a wrapper object with a name property
+            currentUnsubscribes.push({ unsub: unsubTx, name: 'reports-tx-unsub' }, { unsub: unsubUsers, name: 'reports-users-unsub' });
         }
 
         function _recalculateAdminReports(transactions, studentClassMap) {
@@ -1830,6 +1882,10 @@
              else console.error("btnStudentPrintPass not found");
             if(btnDownload) btnDownload.onclick = () => downloadQR('studentPassQR', appState.currentUser?.name || 'student');
             else console.error("btnStudentDownloadQR not found");
+
+            const btnRefreshStudent = document.getElementById('btnStudentRefresh');
+            if(btnRefreshStudent) btnRefreshStudent.onclick = refreshStudentData;
+            else console.error("btnStudentRefresh not found");
             
             // Tab Listeners
             const tabs = document.querySelectorAll('#studentDashboardView .student-tab');
@@ -2059,6 +2115,10 @@
             else console.error("btnStallBack not found");
             if(btnScan) btnScan.onclick = startStallPaymentScan;
              else console.error("btnStallScanToPay not found");
+
+            const btnRefreshStall = document.getElementById('btnStallRefresh');
+            if(btnRefreshStall) btnRefreshStall.onclick = refreshStallData;
+            else console.error("btnStallRefresh not found");
             
             // Tab Listeners
             const tabs = document.querySelectorAll('#stallDashboardView .stall-tab');
@@ -2575,7 +2635,18 @@
         </div>
 
         <!-- VIEW: Admin Dashboard --><div id="adminDashboardView" class="hidden">
-            <header class="my-8 flex justify-between items-center"> <div class="flex items-center space-x-3"> <div> <h1 class="text-3xl font-bold text-red-400">Admin Dashboard</h1> <p class="text-sm text-gray-400">Udaya Public School</p> </div> </div> <button id="btnAdminLogout" class="bg-gray-700 hover:bg-gray-600 text-white font-medium py-2 px-4 rounded-lg text-sm transition-all self-start">Logout</button> </header>
+            <header class="my-8 flex justify-between items-center"> 
+                <div class="flex items-center space-x-3"> 
+                    <div> 
+                        <h1 class="text-3xl font-bold text-red-400">Admin Dashboard</h1> 
+                        <p class="text-sm text-gray-400">Udaya Public School</p> 
+                    </div> 
+                </div> 
+                <div class="flex space-x-3">
+                    <button id="btnAdminRefresh" class="bg-blue-600 hover:bg-blue-700 text-white font-medium py-2 px-4 rounded-lg text-sm transition-all self-start">Refresh Data</button>
+                    <button id="btnAdminLogout" class="bg-gray-700 hover:bg-gray-600 text-white font-medium py-2 px-4 rounded-lg text-sm transition-all self-start">Logout</button> 
+                </div>
+            </header>
             <!-- Admin Tabs --><div class="mb-4 border-b border-gray-700"> <nav class="flex space-x-1 overflow-x-auto pb-2" aria-label="Tabs"> <button data-target="panel-students" class="admin-tab bg-blue-600 text-white px-4 py-3 rounded-t-lg font-medium text-sm flex-shrink-0">Students</button> <button data-target="panel-stalls" class="admin-tab bg-gray-700 text-gray-300 px-4 py-3 rounded-t-lg font-medium text-sm flex-shrink-0">Stalls</button> <button data-target="panel-classes" class="admin-tab bg-gray-700 text-gray-300 px-4 py-3 rounded-t-lg font-medium text-sm flex-shrink-0">Classes</button> <button data-target="panel-reports" class="admin-tab bg-gray-700 text-gray-300 px-4 py-3 rounded-t-lg font-medium text-sm flex-shrink-0">Reports</button> <!-- NEW TAB --> <button data-target="panel-event" class="admin-tab bg-gray-700 text-gray-300 px-4 py-3 rounded-t-lg font-medium text-sm flex-shrink-0">Event</button> </nav> </div>
             <main class="space-y-6">
                 <!-- Panel 1: Manage Students -->
@@ -2669,7 +2740,14 @@
                             <p class="text-gray-400">Loading results...</p>
                         </div>
                     </section>
-                    <section> <h2 class="text-2xl font-semibold mb-4">All Transactions</h2> <div id="adminTransactionList" class="space-y-3 max-h-96 overflow-y-auto"> </div> <button id="btnExportCSV" class="w-full bg-blue-600 hover:bg-blue-700 text-white font-bold py-3 px-4 rounded-lg shadow-lg transition-all mt-4"> Export All Transactions to CSV </button></section>
+                    <section class="flex justify-between items-center mb-4"> 
+                        <h2 class="text-2xl font-semibold text-yellow-300">Transaction History</h2> 
+                        <button id="btnAdminRefreshReports" class="bg-yellow-600 hover:bg-yellow-700 text-white font-bold py-2 px-4 rounded-lg transition-all text-sm">Refresh Data</button> 
+                    </section> 
+                    <section> 
+                         <div id="adminTransactionList" class="space-y-3 max-h-96 overflow-y-auto"> </div> 
+                         <button id="btnExportCSV" class="w-full bg-blue-600 hover:bg-blue-700 text-white font-bold py-3 px-4 rounded-lg shadow-lg transition-all mt-4"> Export All Transactions to CSV </button>
+                    </section>
                 </div>
                 
                 <!-- NEW Panel 5: Manage Event Info & Voting Categories -->
@@ -2711,7 +2789,26 @@
         </div>
 
         <!-- VIEW: Student Dashboard --><div id="studentDashboardView" class="hidden">
-            <header class="my-8"> <button id="btnStudentBack" class="text-blue-400 hover:text-blue-300 mb-4">&larr; Back to Home (Logout)</button> <div class="flex justify-between items-start"> <div class="flex items-center space-x-3"> <div> <h1 class="text-3xl font-bold text-blue-400">Welcome, <span id="studentName"></span></h1> <p class="text-sm text-gray-400">Udaya Public School</p> </div> </div> <button id="btnStudentLogout" class="bg-gray-700 hover:bg-gray-600 text-white font-medium py-2 px-4 rounded-lg text-sm transition-all self-start flex-shrink-0">Logout</button> </div> <div class="mt-4"> <p id="studentIdDisplay" class="text-sm text-gray-400"></p> <p class="text-lg text-gray-300 mt-4">Your Balance:</p> <p id="studentBalance" class="text-5xl font-extrabold text-green-400">₹0.00</p> </div> </header>
+            <header class="my-8"> 
+                <button id="btnStudentBack" class="text-blue-400 hover:text-blue-300 mb-4">&larr; Back to Home (Logout)</button> 
+                <div class="flex justify-between items-start"> 
+                    <div class="flex items-center space-x-3"> 
+                        <div> 
+                            <h1 class="text-3xl font-bold text-blue-400">Welcome, <span id="studentName"></span></h1> 
+                            <p class="text-sm text-gray-400">Udaya Public School</p> 
+                        </div> 
+                    </div> 
+                    <div class="flex space-x-3">
+                        <button id="btnStudentRefresh" class="bg-blue-600 hover:bg-blue-700 text-white font-medium py-2 px-4 rounded-lg text-sm transition-all self-start">Refresh Data</button>
+                        <button id="btnStudentLogout" class="bg-gray-700 hover:bg-gray-600 text-white font-medium py-2 px-4 rounded-lg text-sm transition-all self-start flex-shrink-0">Logout</button> 
+                    </div>
+                </div> 
+                <div class="mt-4"> 
+                    <p id="studentIdDisplay" class="text-sm text-gray-400"></p> 
+                    <p class="text-lg text-gray-300 mt-4">Your Balance:</p> 
+                    <p id="studentBalance" class="text-5xl font-extrabold text-green-400">₹0.00</p> 
+                </div> 
+            </header>
             
             <!-- Student Tabs -->
             <div class="mb-4 border-b border-gray-700">
@@ -2780,7 +2877,25 @@
         </div>
 
         <!-- VIEW: Stall Dashboard --><div id="stallDashboardView" class="hidden">
-            <header class="my-8"> <button id="btnStallBack" class="text-blue-400 hover:text-blue-300 mb-4">&larr; Back to Home (Logout)</button> <div class="flex justify-between items-start"> <div class="flex items-center space-x-3"> <div> <h1 class="text-3xl font-bold text-green-400"><span id="stallName"></span></h1> <p class="text-sm text-gray-400">Udaya Public School</p> </div> </div> <button id="btnStallLogout" class="bg-gray-700 hover:bg-gray-600 text-white font-medium py-2 px-4 rounded-lg text-sm transition-all self-start flex-shrink-0">Logout</button> </div> <div class="mt-4"> <p class="text-lg text-gray-300">Total Sales:</p> <p id="stallTotalSales" class="text-5xl font-extrabold text-white">₹0.00</p> </div> </header>
+            <header class="my-8"> 
+                <button id="btnStallBack" class="text-blue-400 hover:text-blue-300 mb-4">&larr; Back to Home (Logout)</button> 
+                <div class="flex justify-between items-start"> 
+                    <div class="flex items-center space-x-3"> 
+                        <div> 
+                            <h1 class="text-3xl font-bold text-green-400"><span id="stallName"></span></h1> 
+                            <p class="text-sm text-gray-400">Udaya Public School</p> 
+                        </div> 
+                    </div> 
+                    <div class="flex space-x-3">
+                        <button id="btnStallRefresh" class="bg-blue-600 hover:bg-blue-700 text-white font-medium py-2 px-4 rounded-lg text-sm transition-all self-start">Refresh Data</button>
+                        <button id="btnStallLogout" class="bg-gray-700 hover:bg-gray-600 text-white font-medium py-2 px-4 rounded-lg text-sm transition-all self-start flex-shrink-0">Logout</button> 
+                    </div>
+                </div> 
+                <div class="mt-4"> 
+                    <p class="text-lg text-gray-300">Total Sales:</p> 
+                    <p id="stallTotalSales" class="text-5xl font-extrabold text-white">₹0.00</p> 
+                </div> 
+            </header>
             
             <!-- NEW: Stall Tabs -->
             <div class="mb-4 border-b border-gray-700">
