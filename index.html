@@ -57,16 +57,14 @@
             stallCart: {}, // { itemId: quantity }
             allTransactionsForExport: [],
             allStallMenus: {}, // { stallId: { name: 'Stall Name', menu: [...] } }
-            // NEW: Cache for PDF generation
             currentClassStudentList: [], // {id, name, class}
-            // NEW: Cache for Event Info
             eventInfo: "Welcome to the event! Details will be posted here.",
+            votingConfig: [], // [{id: 'vote_xyz', title: 'Best Stall', options: ['Stall A', 'Stall B']}] // NEW
+            allStallsForExport: [] // NEW: For bulk stall QR download
         };
         let modal, modalMessage, modalButton;
         let confirmModal, confirmModalMessage, btnConfirmYes, btnConfirmNo;
         let confirmCallback = null;
-
-        // NEW: Edit Item Modal Elements
         let editItemModal, editItemNameInput, editItemPriceInput, btnSaveItemChanges, btnCancelItemEdit, editItemId, editItemStallId;
 
 
@@ -83,11 +81,20 @@
         const transactionsRef = () => collection(db, 'artifacts', appId, 'public', 'data', 'transactions');
         const configRef = () => doc(db, 'artifacts', appId, 'public', 'data', 'eventConfig', 'config');
         const classesRef = () => doc(db, 'artifacts', appId, 'public', 'data', 'eventConfig', 'classes');
-        // NEW: Event Info Ref
         const eventInfoRef = () => doc(db, 'artifacts', appId, 'public', 'data', 'eventConfig', 'info');
+        const votesRef = () => collection(db, 'artifacts', appId, 'public', 'data', 'votes');
+        // NEW: Voting Config Ref
+        const votingConfigRef = () => doc(db, 'artifacts', appId, 'public', 'data', 'eventConfig', 'voting');
+        
+        let studentVotesCache = {}; // Cache for student's votes
 
         // --- INITIALIZATION ---
         document.addEventListener('DOMContentLoaded', () => {
+            setupDOMCache();
+            initFirebase();
+        });
+
+        function setupDOMCache() {
             // Cache all view elements
             views = {
                 home: document.getElementById('homeView'),
@@ -110,7 +117,7 @@
             btnConfirmNo = document.getElementById('btnConfirmNo');
             loadingMessageEl = document.getElementById('loadingMessage');
 
-            // NEW: Cache Edit Item Modal
+            // Cache Edit Item Modal
             editItemModal = document.getElementById('editItemModal');
             editItemNameInput = document.getElementById('editItemNameInput');
             editItemPriceInput = document.getElementById('editItemPriceInput');
@@ -119,11 +126,7 @@
             editItemId = document.getElementById('editItemId');
             editItemStallId = document.getElementById('editItemStallId');
 
-
-            // Initialize Firebase
-            initFirebase();
-
-            // Attach base event listeners
+            // Attach all event listeners now that the DOM is loaded
             attachHomeListeners();
             attachAdminLoginListeners();
             attachScannerListeners();
@@ -133,6 +136,7 @@
             attachStallPaymentListeners();
             attachAdminRechargeListeners();
 
+            // Attach Modal Listeners
             if (modalButton) {
                 modalButton.onclick = () => modal?.classList.add('hidden');
             } else {
@@ -160,7 +164,7 @@
                 console.error("Error: Could not find button with ID 'btnConfirmYes'");
             }
 
-            // NEW: Edit Modal Listeners
+            // Edit Item Modal Listeners
             if (btnCancelItemEdit) {
                 btnCancelItemEdit.onclick = () => editItemModal?.classList.add('hidden');
             } else {
@@ -172,7 +176,13 @@
             } else {
                 console.error("Error: Could not find button with ID 'btnSaveItemChanges'");
             }
-        });
+            
+            // Edit Voting Modal listeners
+            const btnCancelVotingEdit = document.getElementById('btnCancelVotingEdit');
+            const btnSaveVotingOptions = document.getElementById('btnSaveVotingOptions');
+            if(btnCancelVotingEdit) btnCancelVotingEdit.onclick = () => document.getElementById('editVotingOptionsModal')?.classList.add('hidden');
+            if(btnSaveVotingOptions) btnSaveVotingOptions.onclick = handleSaveVotingOptions;
+        }
 
         async function initFirebase() {
             try {
@@ -186,7 +196,6 @@
                  appId: "1:755057942199:web:f5fa763b08534bcf1f3732",
                  measurementId: "G-NSLXTCC8JM"
                  };
-
                 // const firebaseConfig = { ... };
                 // ----------------------------------------
 
@@ -234,7 +243,8 @@
                         console.log("User is authenticated:", user.uid);
                         // Preload shared data
                         preloadAllStallMenus();
-                        loadEventInfo(); // NEW: Load event info
+                        loadEventInfo();
+                        loadVotingConfig(); // Start listening to voting config here
                         hideLoading();
                         showView('home');
                     }
@@ -249,13 +259,25 @@
         function preloadAllStallMenus() {
             const unsub = onSnapshot(stallsRef(), (snapshot) => {
                 appState.allStallMenus = {};
+                // NEW: Store stalls for bulk download
+                appState.allStallsForExport = [];
+
                 snapshot.forEach(doc => {
+                    const stallData = doc.data();
                     appState.allStallMenus[doc.id] = {
-                        name: doc.data().name,
-                        menu: doc.data().menu || []
+                        name: stallData.name,
+                        menu: stallData.menu || []
                     };
+                    // NEW: Add to export list
+                    appState.allStallsForExport.push({ id: doc.id, name: stallData.name, role: 'stall' });
                 });
                 console.log("All stall menus loaded/updated:", appState.allStallMenus);
+
+                // Re-render stall search/download button state if we are on the admin stall tab
+                if (appState.currentView === 'adminDashboard') {
+                    updateAdminStallBulkDownloadButton();
+                }
+
                 if (appState.currentUser && appState.currentUser.role === 'student' && appState.currentView === 'studentDashboard') {
                     loadStudentStallList();
                 }
@@ -265,7 +287,20 @@
             // We keep this running, so don't add to currentUnsubscribes
         }
 
-        // NEW: Function to load and cache event info
+        // NEW: Update stall download button visibility
+        function updateAdminStallBulkDownloadButton() {
+            const btnDownloadAllStalls = document.getElementById('btnDownloadAllStallPasses');
+            if (btnDownloadAllStalls) {
+                if (appState.allStallsForExport.length > 0) {
+                    btnDownloadAllStalls.classList.remove('hidden');
+                } else {
+                    btnDownloadAllStalls.classList.add('hidden');
+                }
+            }
+        }
+
+
+        // Function to load and cache event info
         function loadEventInfo() {
             const unsub = onSnapshot(eventInfoRef(), (docSnap) => {
                 let content = "Welcome to the event! Event details will be posted here by the admin.";
@@ -292,10 +327,46 @@
             // This listener also runs globally
         }
         
-        // NEW: Helper to format text with line breaks
+        // NEW: Load Voting Config (now dynamic)
+        function loadVotingConfig() {
+            const unsub = onSnapshot(votingConfigRef(), (docSnap) => {
+                let config = [];
+                if (docSnap.exists() && docSnap.data().categories) {
+                    // Ensure the category structure is an array
+                    if(Array.isArray(docSnap.data().categories)) {
+                        config = docSnap.data().categories;
+                    } else {
+                        console.warn("Voting config format incorrect: categories is not an array.");
+                    }
+                }
+                appState.votingConfig = config;
+
+                // Trigger UI updates based on current view
+                if (appState.currentView === 'adminDashboard') {
+                    // Only re-render if the admin tab is active to avoid unnecessary work
+                    const eventPanel = document.getElementById('panel-event');
+                    if (eventPanel && !eventPanel.classList.contains('hidden')) {
+                         renderAdminVotingConfig();
+                    }
+                } 
+                // Fix: Always call renderVotingCategories for student view, the component itself checks for visibility
+                renderVotingCategories(document.getElementById('votingCategoriesList'));
+                
+            }, (error) => {
+                console.error("Error loading voting config:", error);
+                appState.votingConfig = [];
+                const listEl = document.getElementById('votingCategoriesList');
+                if(listEl) listEl.innerHTML = '<p class="text-red-500">Error loading voting data.</p>';
+            });
+            // FIX: Keep this listener active globally by not pushing to currentUnsubscribes, or manage it separately. 
+            // For now, let's keep it running globally to ensure data is updated wherever the user navigates.
+            // currentUnsubscribes.push(unsub); // Removed from here, moved cleanup to manual process if needed.
+        }
+        
+        // Helper to format text with line breaks
         function formatEventInfo(text) {
              // 1. Escape HTML
-           let escapedText = text.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+            let escapedText = text.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
             // 2. Replace newlines with <br>
             return escapedText.replace(/\n/g, '<br>');
         }
@@ -341,7 +412,7 @@
                 confirmModal.classList.remove('hidden');
             } else {
                 console.error("Confirm modal elements not found for showConfirm:", message);
-                console.error("Confirmation skipped as modal elements are missing.");
+                console.error("Confirmation skipped as modal elements is missing.");
                 confirmCallback = null;
             }
         }
@@ -366,7 +437,7 @@
             });
         }
         
-        // NEW: Utility to escape HTML for data attributes
+        // Utility to escape HTML for data attributes
         function escapeHTML(str) {
             if (typeof str !== 'string') return '';
             return str.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;').replace(/'/g, '&#039;');
@@ -450,7 +521,6 @@
         function attachAdminLoginListeners() {
             const btnBack = document.getElementById('btnAdminLoginBack');
             const btnSubmit = document.getElementById('btnAdminLoginSubmit');
-            // const btnReset = document.getElementById('btnAdminResetPassword'); // REMOVED
 
             if (btnBack) btnBack.onclick = () => showView('home');
             else console.error("btnAdminLoginBack not found");
@@ -463,11 +533,11 @@
                 showLoading('Verifying password...');
                 try {
                     const configSnap = await getDoc(configRef());
-                    let correctPassword = '@cx1136'; // Default password - MODIFIED
+                    let correctPassword = '@cx1136'; // Default password
 
                     // Check if config exists and has the password field
                     if (!configSnap.exists() || !configSnap.data()?.adminPassword) {
-                        console.log("Admin password not found in config, setting default '@cx1136'."); // MODIFIED
+                        console.log("Admin password not found in config, setting default '@cx1136'.");
                         // Attempt to save the default password if it's missing (best effort)
                         try {
                             await setDoc(configRef(), { adminPassword: correctPassword }, { merge: true });
@@ -484,9 +554,16 @@
                     
                     if (password === correctPassword) {
                         console.log("Admin password matches.");
-                        loadAdminDashboard();
+                        // ADDED try/catch to ensure loading indicator is hidden if load fails
+                        try {
+                            loadAdminDashboard();
+                        } catch (e) {
+                             console.error("Failed to load admin dashboard:", e);
+                             showAlert("Login successful, but failed to load dashboard view.");
+                             hideLoading();
+                        }
                     } else {
-                         throw new Error('Wrong password.');
+                        throw new Error('Wrong password.');
                     }
                 } catch (error) {
                     console.error("Admin Login Error:", error);
@@ -496,9 +573,6 @@
                 }
             };
              else console.error("btnAdminLoginSubmit not found");
-
-            // REMOVED 'btnAdminResetPassword' listener logic
-            // if (btnReset) ...
         }
 
 
@@ -559,6 +633,11 @@
             const btnSearchStall = document.getElementById('btnAdminSearchStall');
             if (btnSearchStall) btnSearchStall.onclick = searchStall;
              else console.error("btnAdminSearchStall not found");
+
+            // NEW: Bulk Stall Download
+            const btnDownloadAllStalls = document.getElementById('btnDownloadAllStallPasses');
+            if (btnDownloadAllStalls) btnDownloadAllStalls.onclick = () => generateBulkQRPasses(appState.allStallsForExport, 'stall');
+            else console.error("btnDownloadAllStallPasses not found");
             
             // Panel: Classes
             const btnAddClass = document.getElementById('btnAdminAddClass');
@@ -570,13 +649,17 @@
             if (btnExport) btnExport.onclick = exportTransactionsToCSV;
             else console.error("btnExportCSV not found");
             
-            // NEW: Panel: Event
+            // Panel: Event
             const btnSaveEventInfo = document.getElementById('btnAdminSaveEventInfo');
             if(btnSaveEventInfo) btnSaveEventInfo.onclick = handleSaveEventInfo;
             else console.error("btnAdminSaveEventInfo not found");
+            
+            // Panel: Event (Voting)
+            const btnAddVotingCategory = document.getElementById('btnAdminAddVotingCategory');
+            if(btnAddVotingCategory) btnAddVotingCategory.onclick = addVotingCategory;
         }
 
-        // NEW: Function to save event info
+        // Function to save event info
         async function handleSaveEventInfo() {
             const textarea = document.getElementById('adminEventInfoTextarea');
             if (!textarea) return console.error("adminEventInfoTextarea not found");
@@ -596,27 +679,34 @@
 
 
         // --- Renders entry pass (admin view has print/download) ---
+        // MODIFIED to accept isStall flag
         function displayUserQR(containerElement, user) {
             if (!containerElement) { console.error("displayUserQR: containerElement is null"); return; }
             containerElement.innerHTML = ''; containerElement.classList.remove('hidden');
             const passId = `printable-pass-${user.id}`, qrInnerId = `qr-code-inner-${user.id}`;
             const printBtnId = `btnPrintPass-${user.id}`, downloadBtnId = `btnDownloadQR-${user.id}`;
             const isAdmin = appState.currentUser && appState.currentUser.role === 'admin';
+            const isStall = user.role === 'stall';
+            
+            const passTitle = isStall ? 'STALL QR PASS' : 'ENTRY PASS';
+            const typeDetail = isStall ? `Stall Name: ${user.name}` : `Class: ${user.class || 'N/A'}`;
+            const nameDisplay = isStall ? user.name : user.name;
+
 
             containerElement.innerHTML = `
-                <div id="${passId}" class="printable-area bg-white text-black p-6 rounded-lg shadow-lg max-w-xs mx-auto border-4 border-blue-600">
+                <div id="${passId}" class="printable-area bg-white text-black p-6 rounded-lg shadow-lg max-w-xs mx-auto border-4 ${isStall ? 'border-green-600' : 'border-blue-600'}">
                     <div class="text-center border-b pb-4 border-gray-300">
                         <h3 class="text-xl font-bold text-gray-800">Udaya Public School</h3>
                         <p class="text-xs text-gray-600">Mahadev Jharkhandi, Kunraghat, Gorakhpur</p>
                     </div>
                     <div class="my-4 text-center">
                         <p class="text-sm font-medium text-gray-700">ANNUAL FEST 2025-26</p>
-                        <p class="text-2xl font-bold text-blue-600">ENTRY PASS</p>
+                        <p class="text-2xl font-bold ${isStall ? 'text-green-600' : 'text-blue-600'}">${passTitle}</p>
                         <p class="text-sm font-semibold text-gray-700">Date: 1-FEB-2026</p>
                     </div>
                     <div class="my-4 text-center">
-                        <p class="text-lg font-bold text-black">${user.name}</p>
-                        <p class="text-base text-gray-700">Class: ${user.class || 'N/A'}</p>
+                        <p class="text-lg font-bold text-black">${nameDisplay}</p>
+                        <p class="text-base text-gray-700">${typeDetail}</p>
                     </div>
                     <div id="${qrInnerId}" class="flex justify-center p-4 bg-white rounded-lg"></div>
                     <p class="text-xs text-center break-all text-gray-500">${user.id}</p>
@@ -726,55 +816,60 @@
 
         /**
          * Helper function to return the HTML string for a single pass.
-         * @param {object} student - The student data object {id, name, class}
+         * @param {object} user - The user data object {id, name, class, role}
          * @param {string} qrId - The unique ID to use for the QR code container element
          * @returns {string} - The HTML string for the pass
          */
-        function getPassHtml(student, qrId) {
+        function getPassHtml(user, qrId) {
+            const isStall = user.role === 'stall';
+            const passTitle = isStall ? 'STALL QR PASS' : 'ENTRY PASS';
+            const typeDetail = isStall ? `Stall Name: ${user.name}` : `Class: ${user.class || 'N/A'}`;
+            const nameDisplay = isStall ? user.name : user.name;
+            const borderColor = isStall ? '#10B981' : '#2563EB'; // Green for stall, Blue for student
+
             return `
-                <div class="printable-area bg-white text-black p-6 rounded-lg shadow-lg border-4 border-blue-600" style="width: 350px; height: auto; box-sizing: border-box;">
+                <div class="printable-area bg-white text-black p-6 rounded-lg shadow-lg border-4" style="width: 350px; height: auto; box-sizing: border-box; border-color: ${borderColor};">
                     <div class="text-center border-b pb-4 border-gray-300">
                         <h3 class="text-xl font-bold text-gray-800" style="font-size: 1.25rem; line-height: 1.75rem;">Udaya Public School</h3>
                         <p class="text-xs text-gray-600" style="font-size: 0.75rem; line-height: 1rem;">Mahadev Jharkhandi, Kunraghat, Gorakhpur</p>
                     </div>
                     <div class="my-4 text-center">
                         <p class="text-sm font-medium text-gray-700" style="font-size: 0.875rem; line-height: 1.25rem;">ANNUAL FEST 2025-26</p>
-                        <p class="text-2xl font-bold text-blue-600" style="font-size: 1.5rem; line-height: 2rem; color: #2563EB;">ENTRY PASS</p>
+                        <p class="text-2xl font-bold" style="font-size: 1.5rem; line-height: 2rem; color: ${borderColor};">${passTitle}</p>
                         <p class="text-sm font-semibold text-gray-700" style="font-size: 0.875rem; line-height: 1.25rem;">Date: 1-FEB-2026</p>
                     </div>
                     <div class="my-4 text-center">
-                        <p class="text-lg font-bold text-black" style="font-size: 1.125rem; line-height: 1.75rem;">${student.name}</p>
-                        <p class="text-base text-gray-700" style="font-size: 1rem; line-height: 1.5rem;">Class: ${student.class || 'N/A'}</p>
+                        <p class="text-lg font-bold text-black" style="font-size: 1.125rem; line-height: 1.75rem;">${nameDisplay}</p>
+                        <p class="text-base text-gray-700" style="font-size: 1rem; line-height: 1.5rem;">${typeDetail}</p>
                     </div>
                     <div id="${qrId}" class="flex justify-center p-4 bg-white rounded-lg" style="display: flex; justify-content: center; padding: 1rem; background-color: #ffffff; border-radius: 0.5rem;"></div>
-                    <p class="text-xs text-center break-all text-gray-500" style="font-size: 0.75rem; line-height: 1rem; word-break: break-all;">${student.id}</p>
+                    <p class="text-xs text-center break-all text-gray-500" style="font-size: 0.75rem; line-height: 1rem; word-break: break-all;">${user.id}</p>
                 </div>`;
         }
 
 
         /**
-         * Generates a multi-page PDF for all students in the currently selected class
-         * using html2canvas to render the pass design.
+         * Generates a multi-page PDF for a list of users (students or stalls)
+         * @param {Array} users - Array of user objects ({id, name, class, role})
+         * @param {string} userType - 'student' or 'stall'
          */
-        async function generateClassPDF() {
-            const students = appState.currentClassStudentList;
-            if (!students || students.length === 0) {
-                return showAlert("No students found for the selected class.");
+        async function generateBulkQRPasses(users, userType) {
+            if (!users || users.length === 0) {
+                return showAlert(`No ${userType}s selected or available for download.`);
             }
             
-            // Check for libraries
             if (typeof window.jspdf === 'undefined' || typeof window.html2canvas === 'undefined') {
                 return showAlert("Error: PDF generation libraries (jsPDF or html2canvas) are not loaded.");
             }
 
-            const className = students[0].class || "all_students";
-            showLoading(`Generating PDF for ${className}... (0 / ${students.length})`);
+            const fileName = `${userType}_passes_${new Date().toISOString().split('T')[0]}`;
+            showLoading(`Generating PDF for ${userType}s... (0 / ${users.length})`);
 
             // 1. Init jsPDF
             const { jsPDF } = window.jspdf;
             const doc = new jsPDF('portrait', 'mm', 'a4'); // A4: 210 x 297 mm
 
-            // 2. Create temporary render container
+            // 2. Setup temporary render container
             let renderContainer = document.getElementById('pdf-render-container');
             if (!renderContainer) {
                 renderContainer = document.createElement('div');
@@ -787,18 +882,10 @@
             }
 
             // 3. Layout Constants (in mm)
-            const A4_WIDTH = 210;
-            const A4_HEIGHT = 297;
+            const PASS_WIDTH = 90; // Approx 90mm width
+            const PASS_HEIGHT = 90; // Approx 90mm height (to fit 3 passes vertically)
             const MARGIN = 10;
             const GUTTER = 6; // Space between passes
-
-            const USABLE_WIDTH = A4_WIDTH - 2 * MARGIN;
-            const USABLE_HEIGHT = A4_HEIGHT - 2 * MARGIN;
-
-            const PASS_WIDTH = (USABLE_WIDTH - GUTTER) / 2; // Approx 92mm
-            // Calculate pass height based on 350px width pass, which has ~450px height
-            const PASS_ASPECT_RATIO = (450 / 350); // Rough aspect ratio, will be corrected by image
-            let PASS_HEIGHT = (USABLE_HEIGHT - (2 * GUTTER)) / 3; // Approx 88mm
 
             // X,Y positions for the top-left corner of each of the 6 passes
             const positions = [
@@ -810,34 +897,34 @@
                 { x: MARGIN + PASS_WIDTH + GUTTER, y: MARGIN + 2 * (PASS_HEIGHT + GUTTER) }, // Row 3, Col 2
             ];
 
-            let studentCounter = 0;
+            let userCounter = 0;
 
-            // 4. Loop through students and draw passes
-            for (const student of students) {
-                const passIndex = studentCounter % 6; // 0-5
+            // 4. Loop through users and draw passes
+            for (const user of users) {
+                const passIndex = userCounter % 6; // 0-5
                 const { x, y } = positions[passIndex];
 
-                // Add a new page if we are starting the 7th student (index 6, which is 0 % 6)
-                if (studentCounter > 0 && passIndex === 0) {
+                // Add a new page if we are starting the 7th user (index 6, which is 0 % 6)
+                if (userCounter > 0 && passIndex === 0) {
                     doc.addPage();
                 }
 
-                showLoading(`Generating PDF... (${studentCounter + 1} / ${students.length})`);
+                showLoading(`Generating PDF... (${userCounter + 1} / ${users.length})`);
 
                 // 1. Create unique ID for QR container
-                const qrId = `pdf-qr-${student.id}`;
+                const qrId = `pdf-qr-${user.id}`;
                 
                 // 2. Set the HTML for the current pass
-                renderContainer.innerHTML = getPassHtml(student, qrId);
+                renderContainer.innerHTML = getPassHtml(user, qrId);
                 
                 // 3. Find the QR element and render the QR code
                 const qrElement = document.getElementById(qrId);
                 if (!qrElement) {
                     console.error("Could not find QR element for PDF render");
-                    continue; // Skip this student
+                    continue; // Skip this user
                 }
                 new QRCode(qrElement, {
-                    text: student.id,
+                    text: user.id,
                     width: 200,
                     height: 200,
                     colorDark: "#000",
@@ -846,7 +933,6 @@
                 });
 
                 // 4. Wait for QR to render, then use html2canvas
-                //    We must wait for the QRCode library to generate the <img> tag.
                 await new Promise(resolve => setTimeout(resolve, 150)); 
 
                 let canvas;
@@ -860,25 +946,23 @@
                         logging: false
                     });
                 } catch (error) {
-                    console.error("html2canvas failed for", student.name, error);
-                    continue; // Skip this student
+                    console.error("html2canvas failed for", user.name, error);
+                    continue; // Skip this user
                 }
 
                 // 5. Get image data
                 const imgData = canvas.toDataURL('image/jpeg', 0.9); // Use JPEG for smaller size
 
                 // 6. Add image to PDF
-                // Calculate aspect ratio
                 const imgProps = doc.getImageProperties(imgData);
-                const pdfImgHeight = (imgProps.height * PASS_WIDTH) / imgProps.width;
                 
-                let finalHeight = pdfImgHeight;
+                // Calculate size based on image aspect ratio and fixed width/height constraint
                 let finalWidth = PASS_WIDTH;
-                
-                // Check if it fits, if not, scale by height
-                if (pdfImgHeight > PASS_HEIGHT) {
+                let finalHeight = (imgProps.height * finalWidth) / imgProps.width;
+
+                if (finalHeight > PASS_HEIGHT) {
                     finalHeight = PASS_HEIGHT;
-                    finalWidth = (imgProps.width * PASS_HEIGHT) / imgProps.height;
+                    finalWidth = (imgProps.width * finalHeight) / imgProps.height;
                 }
 
                 // Center the image within the pass slot
@@ -891,7 +975,7 @@
                 doc.setDrawColor(220, 220, 220); // Light grey border for cutting
                 doc.rect(x, y, PASS_WIDTH, PASS_HEIGHT);
 
-                studentCounter++;
+                userCounter++;
                 
                 // 7. Clean up container for next loop
                 renderContainer.innerHTML = '';
@@ -900,10 +984,17 @@
             // 5. Save PDF
             renderContainer.innerHTML = ''; // Clean up temp container
             hideLoading();
-            doc.save(`entry_passes_${className.replace(/ /g, '_')}.pdf`);
+            doc.save(`${fileName}.pdf`);
+        }
+
+        // Function specific to Student bulk download (calls generic function)
+        async function generateClassPDF() {
+            const students = appState.currentClassStudentList.map(s => ({ ...s, role: 'student' })); // Ensure role is set
+            const className = students[0]?.class || "all_students";
+            await generateBulkQRPasses(students, `students_${className.replace(/ /g, '_')}`);
         }
         
-        // --- END NEW PDF FUNCTIONS ---
+        // --- END NEW/MODIFIED PDF FUNCTIONS ---
 
 
         async function searchStall() {
@@ -918,22 +1009,11 @@
                 const snapshot = await getDocs(q);
                 if (snapshot.empty) throw new Error('No stall found with that name.');
                 const stallUserDoc = snapshot.docs[0];
-                const stallUser = { id: stallUserDoc.id, ...stallUserDoc.data() };
+                const stallUser = { id: stallUserDoc.id, role: 'stall', ...stallUserDoc.data() }; // Ensure role is here
                 qrContainer.classList.remove('hidden');
-                const qrInnerId = `qr-stall-${stallUser.id}`;
-                qrContainer.innerHTML = `
-                    <h3 class="text-lg font-semibold mb-2 text-black">${stallUser.name}</h3>
-                    <div id="${qrInnerId}" class="flex justify-center"></div>
-                    <p class="text-xs mt-2 break-all text-black">${stallUser.id}</p>
-                    <button class="w-full bg-blue-600 hover:bg-blue-700 text-white font-bold py-2 px-4 rounded-lg mt-4 btn-download-stall-qr">Download QR</button>
-                `;
-                const qrElement = document.getElementById(qrInnerId);
-                 if (qrElement) new QRCode(qrElement, { text: stallUser.id, width: 200, height: 200 });
-                 else console.error(`QR container ${qrInnerId} not found`);
                 
-                const btnDownload = qrContainer.querySelector('.btn-download-stall-qr');
-                if(btnDownload) btnDownload.onclick = () => downloadQR(qrInnerId, stallUser.name);
-                else console.error("Stall QR download button not found");
+                // Use the standard displayUserQR which now supports stall passes
+                displayUserQR(qrContainer, stallUser);
                 
                 stallNameInput.value = '';
             } catch (error) {
@@ -963,7 +1043,7 @@
                 if (snapshot.empty) throw new Error('No student found with that name.');
 
                 const studentDoc = snapshot.docs[0];
-                const studentUser = { id: studentDoc.id, ...studentDoc.data() };
+                const studentUser = { id: studentDoc.id, role: 'student', ...studentDoc.data() };
 
                 // Use the existing displayUserQR function which handles UI
                 displayUserQR(qrContainer, studentUser);
@@ -987,9 +1067,14 @@
             loadAdminStallsAndMenus(); 
             loadAdminReports(); 
             loadAdminClasses();
+            loadAdminVotingResults(); 
             // Event info is loaded globally, but we ensure textarea is populated
             const eventTextarea = document.getElementById('adminEventInfoTextarea');
             if (eventTextarea) eventTextarea.value = appState.eventInfo;
+            
+            // FIX: Manually call this to ensure the list is displayed when navigating to the Event tab
+            renderAdminVotingConfig();
+            updateAdminStallBulkDownloadButton(); // Initial check for stall download button
         }
 
         async function generateUser(role) {
@@ -1021,25 +1106,10 @@
                 }
 
                 const userForQR = { id: finalUserId, name, class: studentClass, role };
-                if (role === 'student') {
-                    displayUserQR(qrContainer, userForQR);
-                } else { // Stall QR
-                    qrContainer.innerHTML = ''; qrContainer.classList.remove('hidden');
-                    const qrInnerId = `qr-stall-gen-${userForQR.id}`;
-                    qrContainer.innerHTML = `
-                        <h3 class="text-lg font-semibold mb-2 text-black">${userForQR.name}</h3>
-                        <div id="${qrInnerId}" class="flex justify-center"></div>
-                        <p class="text-xs mt-2 break-all text-black">${userForQR.id}</p>
-                        <button class="w-full bg-blue-600 hover:bg-blue-700 text-white font-bold py-2 px-4 rounded-lg mt-4 btn-download-stall-qr">Download QR</button>
-                    `;
-                    const qrElement = document.getElementById(qrInnerId);
-                    if (qrElement) new QRCode(qrElement, { text: userForQR.id, width: 200, height: 200 });
-                    else console.error(`QR container ${qrInnerId} not found`);
-
-                    const btnDownload = qrContainer.querySelector('.btn-download-stall-qr');
-                    if(btnDownload) btnDownload.onclick = () => downloadQR(qrInnerId, userForQR.name);
-                    else console.error("Stall QR download button not found");
-                }
+                
+                // Use the standardized QR display function
+                displayUserQR(qrContainer, userForQR);
+                
                 nameInput.value = '';
                 if (role === 'student') {
                     const classSelect = document.getElementById('adminStudentClassSelect');
@@ -1119,19 +1189,19 @@
                     <div class="flex items-center space-x-2 flex-shrink-0 ml-2">
                         ${isAdminView ? `
                         <input type="number" value="${item.stock || 0}" min="0" 
-                                class="admin-stock-input bg-gray-700 text-white w-14 text-center rounded px-1 py-0.5 border border-gray-500 focus:ring-blue-500 focus:border-blue-500" 
-                                data-item-id="${item.id}" data-stall-id="${stallId}">
+                                 class="admin-stock-input bg-gray-700 text-white w-14 text-center rounded px-1 py-0.5 border border-gray-500 focus:ring-blue-500 focus:border-blue-500" 
+                                 data-item-id="${item.id}" data-stall-id="${stallId}">
                         <button class="btn-edit-menu-item bg-blue-600 hover:bg-blue-700 text-white px-2 py-1 rounded text-xs"
-                                data-stall-id="${stallId}"
-                                data-item-id="${item.id}"
-                                data-name="${escapeHTML(item.name)}"
-                                data-price="${item.price}">
+                                 data-stall-id="${stallId}"
+                                 data-item-id="${item.id}"
+                                 data-name="${escapeHTML(item.name)}"
+                                 data-price="${item.price}">
                             Edit
                         </button>
                         <button class="btn-delete-menu-item bg-red-600 hover:bg-red-700 text-white px-2 py-1 rounded text-xs"
-                                data-stall-id="${stallId}"
-                                data-item-id="${item.id}"
-                                data-name="${escapeHTML(item.name)}">
+                                 data-stall-id="${stallId}"
+                                 data-item-id="${item.id}"
+                                 data-name="${escapeHTML(item.name)}">
                             Del
                         </button>
                         ` : ''}
@@ -1276,20 +1346,22 @@
 
 
                  if (snapshot.empty) {
-                     listEl.innerHTML = '<p class="text-gray-400">No stalls.</p>'; selectEl.innerHTML = '<option value="">No stalls</option>'; return;
+                     listEl.innerHTML = '<p class="text-gray-400">No stalls.</p>'; selectEl.innerHTML = '<option value="">No stalls</option>'; 
+                     updateAdminStallBulkDownloadButton();
+                     return;
                  }
 
                 listEl.innerHTML = snapshot.docs.map(doc => {
                     const stall = doc.data();
                     return `<div class="bg-gray-700 p-4 rounded-lg">
-                                <div class="flex justify-between items-center mb-2">
-                                    <h4 class="text-lg font-semibold">${stall.name}</h4>
-                                    <button data-id="${stall.ownerId}" data-name="${stall.name}" class="btn-delete-stall bg-red-600 hover:bg-red-700 text-white px-3 py-1 rounded-lg text-sm">Delete</button>
-                                </div>
-                                <div id="menu-list-${stall.ownerId}" class="mt-2 space-y-1">
-                                    ${renderMenuList(stall.menu, doc.id, true)} 
-                                </div>
-                            </div>`;
+                                 <div class="flex justify-between items-center mb-2">
+                                     <h4 class="text-lg font-semibold">${stall.name}</h4>
+                                     <button data-id="${stall.ownerId}" data-name="${stall.name}" class="btn-delete-stall bg-red-600 hover:bg-red-700 text-white px-3 py-1 rounded-lg text-sm">Delete</button>
+                                 </div>
+                                 <div id="menu-list-${stall.ownerId}" class="mt-2 space-y-1">
+                                     ${renderMenuList(stall.menu, doc.id, true)} 
+                                 </div>
+                             </div>`;
                 }).join('');
 
                 selectEl.innerHTML = snapshot.docs.map(doc => `<option value="${doc.id}">${doc.data().name}</option>`).join('');
@@ -1316,7 +1388,8 @@
                         showConfirm(`Delete item "${name}"?`, () => deleteMenuItem(stallId, itemId, name));
                     };
                 });
-
+                
+                updateAdminStallBulkDownloadButton();
 
             }, error => console.error("Error loading stalls:", error));
             currentUnsubscribes.push(unsub);
@@ -1468,6 +1541,263 @@
              }).reverse().join('');
             appState.allTransactionsForExport = transactions;
         }
+        
+        // --- NEW VOTING ADMIN FUNCTIONS ---
+        function loadAdminVotingResults() {
+            const listEl = document.getElementById('adminVotingResults');
+            if (!listEl) return;
+            
+            listEl.innerHTML = '<p class="text-yellow-400">Fetching votes...</p>';
+
+            const unsub = onSnapshot(query(votesRef()), (snapshot) => {
+                const allVotes = snapshot.docs.map(d => d.data());
+                const results = calculateVotingResults(allVotes);
+                renderVotingResults(listEl, results);
+            }, error => {
+                console.error("Error loading voting results:", error);
+                listEl.innerHTML = '<p class="text-red-500">Error loading voting results.</p>';
+            });
+            currentUnsubscribes.push(unsub);
+        }
+
+        function calculateVotingResults(votes) {
+            const results = {};
+            votes.forEach(vote => {
+                const categoryId = vote.category;
+                const option = vote.option;
+
+                if (!results[categoryId]) {
+                    results[categoryId] = { totalVotes: 0, options: {} };
+                }
+                results[categoryId].totalVotes++;
+                results[categoryId].options[option] = (results[categoryId].options[option] || 0) + 1;
+            });
+            return results;
+        }
+
+        function renderVotingResults(listEl, results) {
+            if (Object.keys(results).length === 0) {
+                listEl.innerHTML = '<p class="text-gray-400">No votes cast yet.</p>';
+                return;
+            }
+
+            let html = '';
+            // Use dynamic config (appState.votingConfig)
+            appState.votingConfig.forEach(category => {
+                const categoryResults = results[category.id];
+                const categoryTitle = category.title;
+                
+                if (!categoryResults) return;
+
+                // Sort options by vote count descending
+                const sortedOptions = Object.entries(categoryResults.options)
+                    .sort((a, b) => b[1] - a[1]);
+                    
+                const total = categoryResults.totalVotes;
+                
+                html += `
+                    <div class="bg-gray-700 p-4 rounded-lg">
+                        <h4 class="text-xl font-bold mb-2 text-pink-300">${categoryTitle} (${total} votes)</h4>
+                        <div class="space-y-1">
+                            ${sortedOptions.map(([option, count]) => {
+                                const percentage = total > 0 ? ((count / total) * 100).toFixed(1) : 0;
+                                return `
+                                    <div class="flex justify-between items-center text-sm">
+                                        <span class="font-medium">${option}</span>
+                                        <span class="text-right">${count} votes (${percentage}%)</span>
+                                    </div>
+                                    <div class="w-full bg-gray-600 rounded-full h-2">
+                                        <div class="bg-pink-500 h-2 rounded-full transition-all duration-500" style="width: ${percentage}%;"></div>
+                                    </div>
+                                `;
+                            }).join('')}
+                        </div>
+                    </div>
+                `;
+            });
+
+            listEl.innerHTML = html;
+        }
+
+        // NEW: Renders the Admin UI list of voting categories
+        function renderAdminVotingConfig() {
+            const listEl = document.getElementById('adminVotingCategoriesList');
+            if (!listEl) return;
+            
+            if (appState.votingConfig.length === 0) {
+                listEl.innerHTML = '<p class="text-gray-400">No voting categories defined yet.</p>';
+                return;
+            }
+
+            listEl.innerHTML = appState.votingConfig.map(category => {
+                const optionsList = category.options.map(opt => `<span class="inline-block bg-gray-600 px-2 py-0.5 text-xs rounded-full">${opt}</span>`).join(' ');
+                return `
+                    <div class="bg-gray-700 p-3 rounded-lg space-y-2">
+                        <div class="flex justify-between items-center">
+                            <span class="font-bold text-lg">${category.title}</span>
+                            <div class="space-x-2 flex items-center flex-wrap justify-end">
+                                <button class="btn-edit-voting-options bg-blue-600 hover:bg-blue-700 text-white px-3 py-1 rounded text-sm mt-1"
+                                    data-id="${category.id}"
+                                    data-title="${escapeHTML(category.title)}"
+                                    data-options="${escapeHTML(category.options.join('\n'))}">
+                                    Edit Options
+                                </button>
+                                <button class="btn-delete-voting-category bg-red-600 hover:bg-red-700 text-white px-3 py-1 rounded text-sm mt-1"
+                                    data-id="${category.id}"
+                                    data-title="${escapeHTML(category.title)}">
+                                    Delete
+                                </button>
+                            </div>
+                        </div>
+                        <div>
+                            <h5 class="text-sm text-gray-300 mb-1">Options:</h5>
+                            <p class="text-sm space-x-1">${optionsList}</p>
+                        </div>
+                    </div>
+                `;
+            }).join('');
+            
+            document.querySelectorAll('.btn-delete-voting-category').forEach(btn => {
+                const { id, title } = btn.dataset;
+                btn.onclick = () => showConfirm(`Delete category "${title}"? This will remove all associated votes!`, () => deleteVotingCategory(id, title));
+            });
+            
+            document.querySelectorAll('.btn-edit-voting-options').forEach(btn => {
+                btn.onclick = showEditVotingOptionsModal;
+            });
+        }
+        
+        async function addVotingCategory() {
+            const titleInput = document.getElementById('adminVotingCategoryTitle');
+            const optionsInput = document.getElementById('adminVotingCategoryOptions');
+            if (!titleInput || !optionsInput) return console.error("Missing input elements for voting category.");
+            
+            const title = titleInput.value.trim();
+            const options = optionsInput.value.split('\n').map(o => o.trim()).filter(o => o.length > 0);
+            
+            if (!title) return showAlert("Please enter a category title.");
+            if (options.length === 0) return showAlert("Please enter at least one option for the category.");
+            
+            showLoading("Adding category...");
+            try {
+                const newCategory = {
+                    id: 'vote_' + crypto.randomUUID(),
+                    title: title,
+                    options: options
+                };
+                
+                // Atomically update the categories array in the single config doc
+                const configDoc = await getDoc(votingConfigRef());
+                const categories = (configDoc.exists() && Array.isArray(configDoc.data().categories)) ? configDoc.data().categories : [];
+                
+                if(categories.find(c => c.title === title)) throw new Error("A category with this title already exists.");
+
+                await setDoc(votingConfigRef(), { categories: [...categories, newCategory] });
+                
+                titleInput.value = '';
+                optionsInput.value = '';
+                showAlert("Voting category added successfully!");
+                
+            } catch (error) {
+                console.error("Error adding voting category:", error);
+                showAlert("Error adding category: " + error.message);
+            } finally {
+                hideLoading();
+            }
+        }
+
+        async function deleteVotingCategory(categoryId, categoryTitle) {
+            showLoading(`Deleting category "${categoryTitle}" and all associated votes...`);
+            try {
+                // 1. Remove the category from the config document via transaction
+                const configRef = votingConfigRef();
+                await runTransaction(db, async (transaction) => {
+                    const configDoc = await transaction.get(configRef);
+                    if (!configDoc.exists()) return;
+
+                    const categories = configDoc.data().categories || [];
+                    const updatedCategories = categories.filter(c => c.id !== categoryId);
+                    
+                    transaction.set(configRef, { categories: updatedCategories });
+                });
+                
+                // 2. Delete all votes for this category (Fire-and-forget deletion, as it might take time)
+                const q = query(votesRef(), where('category', '==', categoryId));
+                const snapshot = await getDocs(q);
+                const deletePromises = snapshot.docs.map(doc => deleteDoc(doc.ref));
+                await Promise.all(deletePromises);
+                
+                showAlert(`Category "${categoryTitle}" and ${snapshot.size} votes deleted successfully.`);
+            } catch (error) {
+                console.error("Error deleting category:", error);
+                showAlert("Error deleting category: " + error.message);
+            } finally {
+                hideLoading();
+            }
+        }
+
+        function showEditVotingOptionsModal(e) {
+            const { id, title, options } = e.currentTarget.dataset;
+            const modal = document.getElementById('editVotingOptionsModal');
+            const titleDisplay = document.getElementById('editVotingCategoryTitleDisplay');
+            const optionsInput = document.getElementById('editVotingOptionsInput');
+            const idInput = document.getElementById('editVotingCategoryId');
+
+            if (modal && titleDisplay && optionsInput && idInput) {
+                titleDisplay.textContent = title;
+                optionsInput.value = options; // options is already '\n' separated
+                idInput.value = id;
+                modal.classList.remove('hidden');
+            } else {
+                console.error("Missing edit voting modal elements.");
+                showAlert("Error opening edit dialog.");
+            }
+        }
+
+        async function handleSaveVotingOptions() {
+            const idInput = document.getElementById('editVotingCategoryId');
+            const optionsInput = document.getElementById('editVotingOptionsInput');
+            const modal = document.getElementById('editVotingOptionsModal');
+            
+            if (!idInput || !optionsInput) return;
+            
+            const categoryId = idInput.value;
+            const newOptions = optionsInput.value.split('\n').map(o => o.trim()).filter(o => o.length > 0);
+
+            if (newOptions.length === 0) return showAlert("A category must have at least one option.");
+
+            showLoading("Saving voting options...");
+            try {
+                const configRef = votingConfigRef();
+                
+                await runTransaction(db, async (transaction) => {
+                    const configDoc = await transaction.get(configRef);
+                    if (!configDoc.exists()) throw new Error("Voting config not found.");
+                    
+                    const categories = configDoc.data().categories || [];
+                    const categoryIndex = categories.findIndex(c => c.id === categoryId);
+                    
+                    if (categoryIndex === -1) throw new Error("Category not found.");
+                    
+                    // Create the updated category object
+                    const updatedCategory = { ...categories[categoryIndex], options: newOptions };
+                    // Rebuild the entire array to update the document in the transaction
+                    const updatedCategories = categories.map((c, i) => i === categoryIndex ? updatedCategory : c);
+                    
+                    transaction.update(configRef, { categories: updatedCategories });
+                });
+                
+                modal.classList.add('hidden');
+                showAlert("Voting options updated successfully.");
+            } catch (error) {
+                console.error("Error saving voting options:", error);
+                showAlert("Error saving changes: " + error.message);
+            } finally {
+                hideLoading();
+            }
+        }
+        // --- END NEW VOTING ADMIN FUNCTIONS ---
+
 
         function exportTransactionsToCSV() {
             if (appState.allTransactionsForExport.length === 0) return showAlert('No transactions.');
@@ -1501,7 +1831,7 @@
             if(btnDownload) btnDownload.onclick = () => downloadQR('studentPassQR', appState.currentUser?.name || 'student');
             else console.error("btnStudentDownloadQR not found");
             
-            // NEW: Tab Listeners
+            // Tab Listeners
             const tabs = document.querySelectorAll('#studentDashboardView .student-tab');
             const tabPanels = document.querySelectorAll('#studentDashboardView .student-tab-panel');
             tabs.forEach(tab => {
@@ -1526,7 +1856,7 @@
             // Reset tabs to default
             document.querySelectorAll('#studentDashboardView .student-tab').forEach((tab, index) => {
                  const targetPanel = document.getElementById(tab.dataset.target);
-                 if (index === 0) { // First tab
+                 if (index === 0) { // First tab (Wallet)
                      tab.classList.replace('bg-gray-700', 'bg-blue-600');
                      tab.classList.remove('text-gray-300');
                      if(targetPanel) targetPanel.classList.remove('hidden');
@@ -1567,7 +1897,116 @@
 
             loadStudentStallList();
             loadStudentTransactionHistory();
+            loadStudentVotingPanel(); 
         }
+        
+        // --- NEW VOTING STUDENT FUNCTIONS ---
+        function loadStudentVotingPanel() {
+            const listEl = document.getElementById('votingCategoriesList');
+            if (!appState.currentUser || !listEl) return;
+
+            // 1. Load current student's votes
+            const q = query(votesRef(), where('studentId', '==', appState.currentUser.id));
+            const unsubVotes = onSnapshot(q, (snapshot) => {
+                studentVotesCache = {};
+                snapshot.forEach(doc => {
+                    const vote = doc.data();
+                    studentVotesCache[vote.category] = vote.option;
+                });
+                renderVotingCategories(listEl); // Re-render when student's votes change
+            }, error => {
+                console.error("Error loading student votes:", error);
+                if(listEl) listEl.innerHTML = '<p class="text-red-500">Error loading your vote history.</p>';
+            });
+            currentUnsubscribes.push(unsubVotes); 
+        }
+
+        function renderVotingCategories(listEl) {
+            if (!listEl) return;
+
+            if (appState.votingConfig.length === 0) {
+                listEl.innerHTML = '<p class="text-gray-400">No voting categories are active yet.</p>';
+                return;
+            }
+
+            let html = '';
+            appState.votingConfig.forEach(category => {
+                const hasVoted = studentVotesCache[category.id];
+                const options = category.options; // Directly use the options array
+
+                // FIX: Check if options array is valid and has contents
+                if (!options || !Array.isArray(options) || options.length === 0) {
+                    html += `<div class="bg-gray-700 p-4 rounded-lg"><h4 class="text-lg font-semibold">${category.title}</h4><p class="text-gray-400">No options defined for this category.</p></div>`;
+                    return;
+                }
+
+                html += `
+                    <div class="bg-gray-700 p-4 rounded-lg shadow-md border-t-4 ${hasVoted ? 'border-green-500' : 'border-pink-500'}">
+                        <h4 class="text-xl font-bold mb-3">${category.title}</h4>
+                        ${hasVoted ? `
+                            <p class="text-green-400 font-semibold text-lg">Voted: ${hasVoted}</p>
+                            <p class="text-sm text-gray-400 mt-1">Thank you for voting!</p>
+                        ` : `
+                            <p class="text-sm text-gray-300 mb-2">Select your choice:</p>
+                            <div class="space-y-2">
+                                ${options.map(option => `
+                                    <button class="btn-vote w-full text-left bg-gray-600 hover:bg-pink-600 text-white py-2 px-3 rounded-lg transition-colors duration-150"
+                                        data-category-id="${category.id}"
+                                        data-option="${escapeHTML(option)}">
+                                        ${option}
+                                    </button>
+                                `).join('')}
+                            </div>
+                        `}
+                    </div>
+                `;
+            });
+            listEl.innerHTML = html;
+
+            // Attach listeners for newly rendered buttons
+            document.querySelectorAll('.btn-vote').forEach(btn => {
+                btn.onclick = handleVoteSubmissionClick;
+            });
+        }
+
+        function handleVoteSubmissionClick(e) {
+            const { categoryId, option } = e.currentTarget.dataset;
+            const categoryTitle = appState.votingConfig.find(c=>c.id===categoryId)?.title || 'category'; 
+            showConfirm(`Cast vote for **${option}** in the **${categoryTitle}**? You cannot change your vote later.`, () => {
+                handleVoteSubmission(categoryId, option);
+            });
+        }
+
+
+        async function handleVoteSubmission(category, option) {
+            if (!appState.currentUser) return showAlert("You must be logged in to vote.");
+            if (studentVotesCache[category]) return showAlert("You have already voted in this category.");
+
+            showLoading("Casting vote...");
+            try {
+                // Pre-check (optional, but good)
+                const categoryConfig = appState.votingConfig.find(c => c.id === category);
+                if (!categoryConfig || !categoryConfig.options.includes(option)) {
+                     throw new Error("Invalid category or option selected.");
+                }
+
+                await addDoc(votesRef(), {
+                    studentId: appState.currentUser.id,
+                    studentName: appState.currentUser.name,
+                    class: appState.currentUser.class || 'N/A',
+                    category: category,
+                    option: option,
+                    timestamp: serverTimestamp()
+                });
+                showAlert("Vote submitted successfully!");
+            } catch (error) {
+                console.error("Vote submission failed:", error);
+                showAlert(`Failed to cast vote: ${error.message}`);
+            } finally {
+                hideLoading();
+            }
+        }
+        // --- END NEW VOTING STUDENT FUNCTIONS ---
 
         function loadStudentStallList() {
             const listEl = document.getElementById('studentStallList');
@@ -1621,7 +2060,7 @@
             if(btnScan) btnScan.onclick = startStallPaymentScan;
              else console.error("btnStallScanToPay not found");
             
-            // NEW: Tab Listeners
+            // Tab Listeners
             const tabs = document.querySelectorAll('#stallDashboardView .stall-tab');
             const tabPanels = document.querySelectorAll('#stallDashboardView .stall-tab-panel');
             tabs.forEach(tab => {
@@ -1644,7 +2083,7 @@
             // Reset tabs to default
             document.querySelectorAll('#stallDashboardView .stall-tab').forEach((tab, index) => {
                  const targetPanel = document.getElementById(tab.dataset.target);
-                 if (index === 0) { // First tab
+                 if (index === 0) { // First tab (Sales)
                      tab.classList.replace('bg-gray-700', 'bg-blue-600');
                      tab.classList.remove('text-gray-300');
                      if(targetPanel) targetPanel.classList.remove('hidden');
@@ -1951,7 +2390,11 @@
             try {
                 await runTransaction(db, async tx => {
                     const studentDoc = await tx.get(studentRef); if (!studentDoc.exists()) throw new Error("Student not found.");
-                    tx.update(studentRef, { balance: increment(amount) }); // Both recharge and refund add money
+                    
+                    let updateAmount = amount;
+                    // Note: Both recharge and refund add to the balance in the transaction logic
+                    
+                    tx.update(studentRef, { balance: increment(updateAmount) }); 
                     tx.set(doc(transactionsRef()), { 
                         studentId, 
                         studentName:appState.scannedStudentName, 
@@ -1976,6 +2419,7 @@
             
             // Check if class exists, if not, add it.
             const classesSnap = await getDoc(classesRef());
+            // FIX: Corrected syntax error (ReferenceError) in classesSnap check
             const classNames = (classesSnap.exists() && classesSnap.data().classNames) ? classesSnap.data().classNames : [];
             if (!classNames.includes(className)) {
                 console.log(`Adding new class from bulk import: ${className}`);
@@ -2127,14 +2571,12 @@
         <!-- VIEW: Admin Login --><div id="adminLoginView" class="hidden">
             <header class="my-8"> <div class="flex items-center space-x-3 mb-4"> <div> <h2 class="text-lg font-semibold text-white">Udaya Public School</h2> <p class="text-sm text-gray-400">Annual Fest 2025-26</p> </div> </div> <button id="btnAdminLoginBack" class="text-blue-400 hover:text-blue-300">&larr; Back to Home</button> <h1 class="text-3xl font-bold text-center text-red-400 mt-4">Admin Login</h1> </header>
             <main class="space-y-4 bg-gray-800 p-6 rounded-lg shadow-xl"> <div> <label for="adminPassword" class="block text-sm font-medium text-gray-300 mb-1">Password</label> <input type="password" id="adminPassword" class="w-full bg-gray-700 text-white border border-gray-600 rounded-lg p-3 focus:ring-red-500 focus:border-red-500" placeholder="••••••••"> </div> <button id="btnAdminLoginSubmit" class="w-full bg-red-600 hover:bg-red-700 text-white font-bold py-3 px-4 rounded-lg shadow-lg transition-all"> Login </button> 
-            <!-- REMOVED Reset Button -->
-            <!-- <button id="btnAdminResetPassword" type="button" class="w-full text-center text-xs text-gray-400 hover:text-white mt-4"> Forgot Password? Reset to default </button> -->
             </main>
         </div>
 
         <!-- VIEW: Admin Dashboard --><div id="adminDashboardView" class="hidden">
             <header class="my-8 flex justify-between items-center"> <div class="flex items-center space-x-3"> <div> <h1 class="text-3xl font-bold text-red-400">Admin Dashboard</h1> <p class="text-sm text-gray-400">Udaya Public School</p> </div> </div> <button id="btnAdminLogout" class="bg-gray-700 hover:bg-gray-600 text-white font-medium py-2 px-4 rounded-lg text-sm transition-all self-start">Logout</button> </header>
-            <!-- Admin Tabs --><div class="mb-4 border-b border-gray-700"> <nav class="flex space-x-1" aria-label="Tabs"> <button data-target="panel-students" class="admin-tab bg-blue-600 text-white px-4 py-3 rounded-t-lg font-medium text-sm">Students</button> <button data-target="panel-stalls" class="admin-tab bg-gray-700 text-gray-300 px-4 py-3 rounded-t-lg font-medium text-sm">Stalls</button> <button data-target="panel-classes" class="admin-tab bg-gray-700 text-gray-300 px-4 py-3 rounded-t-lg font-medium text-sm">Classes</button> <button data-target="panel-reports" class="admin-tab bg-gray-700 text-gray-300 px-4 py-3 rounded-t-lg font-medium text-sm">Reports</button> <!-- NEW TAB --> <button data-target="panel-event" class="admin-tab bg-gray-700 text-gray-300 px-4 py-3 rounded-t-lg font-medium text-sm">Event</button> </nav> </div>
+            <!-- Admin Tabs --><div class="mb-4 border-b border-gray-700"> <nav class="flex space-x-1 overflow-x-auto pb-2" aria-label="Tabs"> <button data-target="panel-students" class="admin-tab bg-blue-600 text-white px-4 py-3 rounded-t-lg font-medium text-sm flex-shrink-0">Students</button> <button data-target="panel-stalls" class="admin-tab bg-gray-700 text-gray-300 px-4 py-3 rounded-t-lg font-medium text-sm flex-shrink-0">Stalls</button> <button data-target="panel-classes" class="admin-tab bg-gray-700 text-gray-300 px-4 py-3 rounded-t-lg font-medium text-sm flex-shrink-0">Classes</button> <button data-target="panel-reports" class="admin-tab bg-gray-700 text-gray-300 px-4 py-3 rounded-t-lg font-medium text-sm flex-shrink-0">Reports</button> <!-- NEW TAB --> <button data-target="panel-event" class="admin-tab bg-gray-700 text-gray-300 px-4 py-3 rounded-t-lg font-medium text-sm flex-shrink-0">Event</button> </nav> </div>
             <main class="space-y-6">
                 <!-- Panel 1: Manage Students -->
                 <div id="panel-students" class="admin-tab-panel space-y-6">
@@ -2147,12 +2589,12 @@
                             <div>
                                 <label for="adminStudentBulkUpload" class="block text-sm font-medium text-gray-300 mb-1">Upload CSV File</label>
                                 <input type="file" id="adminStudentBulkUpload" accept=".csv,application/vnd.ms-excel" class="w-full text-sm text-gray-400
-                                    file:mr-4 file:py-2 file:px-4
-                                    file:rounded-lg file:border-0
-                                    file:text-sm file:font-semibold
-                                    file:bg-purple-600 file:text-white
-                                    hover:file:bg-purple-700
-                                    cursor-pointer">
+                                     file:mr-4 file:py-2 file:px-4
+                                     file:rounded-lg file:border-0
+                                     file:text-sm file:font-semibold
+                                     file:bg-purple-600 file:text-white
+                                     hover:file:bg-purple-700
+                                     cursor-pointer">
                                 <p class="text-xs text-gray-400 mt-2">Required format: <code class="bg-gray-700 px-1 rounded">Name,Class</code> (one per line, no header row).</p>
                                 <p class="text-xs text-gray-400">Example: <code class="bg-gray-700 px-1 rounded">John Doe,10-A</code></p>
                             </div>
@@ -2183,8 +2625,16 @@
 
                 <!-- Panel 2: Manage Stalls -->
                 <div id="panel-stalls" class="admin-tab-panel hidden space-y-6">
-                    <section class="bg-gray-800 p-6 rounded-lg shadow-xl"> <h2 class="text-2xl font-semibold mb-4 text-green-300">Generate Stall</h2> <div class="space-y-4"> <input type="text" id="adminStallName" class="w-full bg-gray-700 text-white border border-gray-600 rounded-lg p-3" placeholder="Stall Name (e.g., Pizza Corner)"> <button id="btnAdminGenerateStall" class="w-full bg-green-600 hover:bg-green-700 text-white font-bold py-3 px-4 rounded-lg shadow-lg transition-all"> Generate Stall QR </button> <div id="adminStallQRContainer" class="bg-white p-4 rounded-lg text-black text-center mt-4 hidden"> </div> </section>
-                    <section class="bg-gray-800 p-6 rounded-lg shadow-xl"> <h2 class="text-2xl font-semibold mb-4 text-yellow-300">Find Stall QR</h2> <div class="space-y-4"> <input type="text" id="adminSearchStallName" class="w-full bg-gray-700 text-white border border-gray-600 rounded-lg p-3" placeholder="Enter Full Stall Name"> <button id="btnAdminSearchStall" class="w-full bg-yellow-600 hover:bg-yellow-700 text-white font-bold py-3 px-4 rounded-lg shadow-lg transition-all"> Search </button> <div id="adminSearchStallQRContainer" class="bg-white p-4 rounded-lg text-black text-center mt-4 hidden"> </div> </section>
+                    <section class="bg-gray-800 p-6 rounded-lg shadow-xl"> <h2 class="text-2xl font-semibold mb-4 text-green-300">Generate Stall</h2> <div class="space-y-4"> <input type="text" id="adminStallName" class="w-full bg-gray-700 text-white border border-gray-600 rounded-lg p-3" placeholder="Stall Name (e.g., Pizza Corner)"> <button id="btnAdminGenerateStall" class="w-full bg-green-600 hover:bg-green-700 text-white font-bold py-3 px-4 rounded-lg shadow-lg transition-all"> Generate Stall QR </button> <div id="adminStallQRContainer" class="mt-4"> </div> </section>
+
+                    <!-- NEW: Bulk Stall Download Button -->
+                    <section class="bg-gray-800 p-6 rounded-lg shadow-xl"> 
+                        <h2 class="text-2xl font-semibold mb-4 text-purple-300">Bulk Download Stall Passes</h2>
+                        <p class="text-sm text-gray-400 mb-4">Download QR passes for all registered stalls. Passes are formatted to print 6 per page.</p>
+                        <button id="btnDownloadAllStallPasses" class="w-full bg-purple-600 hover:bg-purple-700 text-white font-bold py-3 px-4 rounded-lg shadow-lg transition-all hidden"> Download All Stall Passes </button>
+                    </section>
+                    
+                    <section class="bg-gray-800 p-6 rounded-lg shadow-xl"> <h2 class="text-2xl font-semibold mb-4 text-yellow-300">Find Stall QR</h2> <div class="space-y-4"> <input type="text" id="adminSearchStallName" class="w-full bg-gray-700 text-white border border-gray-600 rounded-lg p-3" placeholder="Enter Full Stall Name"> <button id="btnAdminSearchStall" class="w-full bg-yellow-600 hover:bg-yellow-700 text-white font-bold py-3 px-4 rounded-lg shadow-lg transition-all"> Search </button> <div id="adminSearchStallQRContainer" class="mt-4 hidden"> </div> </section>
                     <section class="bg-gray-800 p-6 rounded-lg shadow-xl">
                         <h2 class="text-2xl font-semibold mb-4 text-green-300">Add Menu Item</h2>
                         <div class="space-y-4">
@@ -2212,10 +2662,17 @@
                     <section class="bg-gray-800 p-6 rounded-lg shadow-xl space-y-4"> <h2 class="text-2xl font-semibold mb-4 text-yellow-300">Event Financials</h2> <div class="flex justify-between bg-gray-700 p-4 rounded-lg"> <span>Total Recharged:</span> <span id="adminTotalRecharged" class="text-lg font-bold text-green-400">₹0.00</span> </div> <div class="flex justify-between bg-gray-700 p-4 rounded-lg"> <span>Total Sales:</span> <span id="adminTotalSales" class="text-lg font-bold text-red-400">₹0.00</span> </div> <!-- NEW Refund Stat --> <div class="flex justify-between bg-gray-700 p-4 rounded-lg"> <span>Total Refunded:</span> <span id="adminTotalRefunded" class="text-lg font-bold text-yellow-400">₹0.00</span> </div> <div class="flex justify-between bg-gray-700 p-4 rounded-lg"> <span>Outstanding Balance:</span> <span id="adminOutstandingBalance" class="text-lg font-bold text-blue-400">₹0.00</span> </div> <div class="grid grid-cols-2 gap-4"> <div class="bg-gray-700 p-4 rounded-lg text-center"> <span class="text-sm text-gray-400">Total Transactions</span> <span id="adminTotalTransactions" class="text-2xl font-bold block">0</span> </div> <div class="bg-gray-700 p-4 rounded-lg text-center"> <span class="text-sm text-gray-400">Avg. Purchase</span> <span id="adminAvgPurchaseValue" class="text-2xl font-bold block">₹0.00</span> </div> </div> </section>
                     <section class="bg-gray-800 p-6 rounded-lg shadow-xl"> <h3 class="text-xl font-semibold mb-2">Sales per Stall</h3> <div id="adminStallSalesSummary" class="space-y-2 max-h-60 overflow-y-auto"> </div> </section>
                     <section class="bg-gray-800 p-6 rounded-lg shadow-xl"> <h3 class="text-xl font-semibold mb-2">Top-Selling Items</h3> <div id="adminTopItemsList" class="space-y-2 max-h-60 overflow-y-auto"> </div> </section> <section class="bg-gray-800 p-6 rounded-lg shadow-xl"> <h3 class="text-xl font-semibold mb-2">Total Spending by Class</h3> <div id="adminClassSpendingSummary" class="space-y-2 max-h-60 overflow-y-auto"> </div> </section>
-                    <section> <h2 class="text-2xl font-semibold mb-4">All Transactions</h2> <div id="adminTransactionList" class="space-y-3 max-h-96 overflow-y-auto"> </div> <button id="btnExportCSV" class="w-full bg-blue-600 hover:bg-blue-700 text-white font-bold py-3 px-4 rounded-lg shadow-lg transition-all mt-4"> Export All Transactions to CSV </button> </section>
+                    <!-- NEW: Voting Results Summary -->
+                    <section class="bg-gray-800 p-6 rounded-lg shadow-xl"> 
+                        <h2 class="text-2xl font-semibold mb-4 text-pink-300">Voting Results Summary</h2> 
+                        <div id="adminVotingResults" class="space-y-4">
+                            <p class="text-gray-400">Loading results...</p>
+                        </div>
+                    </section>
+                    <section> <h2 class="text-2xl font-semibold mb-4">All Transactions</h2> <div id="adminTransactionList" class="space-y-3 max-h-96 overflow-y-auto"> </div> <button id="btnExportCSV" class="w-full bg-blue-600 hover:bg-blue-700 text-white font-bold py-3 px-4 rounded-lg shadow-lg transition-all mt-4"> Export All Transactions to CSV </button></section>
                 </div>
                 
-                <!-- NEW Panel 5: Manage Event Info -->
+                <!-- NEW Panel 5: Manage Event Info & Voting Categories -->
                 <div id="panel-event" class="admin-tab-panel hidden space-y-6">
                     <section class="bg-gray-800 p-6 rounded-lg shadow-xl">
                         <h2 class="text-2xl font-semibold mb-4 text-indigo-300">Edit Event Info</h2>
@@ -2225,6 +2682,23 @@
                             <button id="btnAdminSaveEventInfo" class="w-full bg-indigo-600 hover:bg-indigo-700 text-white font-bold py-3 px-4 rounded-lg shadow-lg transition-all">
                                 Save Event Info
                             </button>
+                        </div>
+                    </section>
+                    
+                    <!-- NEW: Manage Voting Categories -->
+                    <section class="bg-gray-800 p-6 rounded-lg shadow-xl">
+                        <h2 class="text-2xl font-semibold mb-4 text-pink-300">Manage Voting Categories</h2>
+                        <div class="space-y-4 mb-6 p-4 bg-gray-700 rounded-lg">
+                            <h3 class="text-lg font-semibold text-white">Add New Category</h3>
+                            <input type="text" id="adminVotingCategoryTitle" class="w-full bg-gray-600 text-white border border-gray-500 rounded-lg p-3" placeholder="Category Title (e.g., Best Stall)">
+                            <textarea id="adminVotingCategoryOptions" rows="3" class="w-full bg-gray-600 text-white border border-gray-500 rounded-lg p-3" placeholder="Enter options, one per line (e.g., Stall A, Stall B)"></textarea>
+                            <p class="text-xs text-gray-400">Enter one option per line. Changes here will instantly affect the student voting panel.</p>
+                            <button id="btnAdminAddVotingCategory" class="w-full bg-pink-600 hover:bg-pink-700 text-white font-bold py-3 px-4 rounded-lg transition-all">Add Category</button>
+                        </div>
+                        
+                        <h3 class="text-xl font-semibold mb-2">Current Categories</h3>
+                        <div id="adminVotingCategoriesList" class="space-y-3">
+                            <p class="text-gray-400">Loading categories...</p>
                         </div>
                     </section>
                 </div>
@@ -2239,12 +2713,13 @@
         <!-- VIEW: Student Dashboard --><div id="studentDashboardView" class="hidden">
             <header class="my-8"> <button id="btnStudentBack" class="text-blue-400 hover:text-blue-300 mb-4">&larr; Back to Home (Logout)</button> <div class="flex justify-between items-start"> <div class="flex items-center space-x-3"> <div> <h1 class="text-3xl font-bold text-blue-400">Welcome, <span id="studentName"></span></h1> <p class="text-sm text-gray-400">Udaya Public School</p> </div> </div> <button id="btnStudentLogout" class="bg-gray-700 hover:bg-gray-600 text-white font-medium py-2 px-4 rounded-lg text-sm transition-all self-start flex-shrink-0">Logout</button> </div> <div class="mt-4"> <p id="studentIdDisplay" class="text-sm text-gray-400"></p> <p class="text-lg text-gray-300 mt-4">Your Balance:</p> <p id="studentBalance" class="text-5xl font-extrabold text-green-400">₹0.00</p> </div> </header>
             
-            <!-- NEW: Student Tabs -->
+            <!-- Student Tabs -->
             <div class="mb-4 border-b border-gray-700">
-                <nav class="flex space-x-1" aria-label="Tabs">
-                    <button data-target="student-panel-wallet" class="student-tab bg-blue-600 text-white px-4 py-3 rounded-t-lg font-medium text-sm">Wallet & Pass</button>
-                    <button data-target="student-panel-stalls" class="student-tab bg-gray-700 text-gray-300 px-4 py-3 rounded-t-lg font-medium text-sm">Stalls</button>
-                    <button data-target="student-panel-event" class="student-tab bg-gray-700 text-gray-300 px-4 py-3 rounded-t-lg font-medium text-sm">Event Info</button>
+                <nav class="flex space-x-1 overflow-x-auto pb-2" aria-label="Tabs">
+                    <button data-target="student-panel-wallet" class="student-tab bg-blue-600 text-white px-4 py-3 rounded-t-lg font-medium text-sm flex-shrink-0">Wallet & Pass</button>
+                    <button data-target="student-panel-stalls" class="student-tab bg-gray-700 text-gray-300 px-4 py-3 rounded-t-lg font-medium text-sm flex-shrink-0">Stalls</button>
+                    <button data-target="student-panel-event" class="student-tab bg-gray-700 text-gray-300 px-4 py-3 rounded-t-lg font-medium text-sm flex-shrink-0">Event Info</button>
+                    <button data-target="student-panel-voting" class="student-tab bg-gray-700 text-gray-300 px-4 py-3 rounded-t-lg font-medium text-sm flex-shrink-0">Voting</button> <!-- NEW TAB -->
                 </nav>
             </div>
 
@@ -2287,6 +2762,17 @@
                         <h2 class="text-2xl font-semibold mb-4 text-indigo-300">Event Information</h2>
                         <div id="studentEventInfo" class="text-gray-200 leading-relaxed event-info-content">
                             <!-- Content injected by JS -->
+                        </div>
+                    </section>
+                </div>
+                
+                <!-- NEW Student Panel 4: Voting -->
+                <div id="student-panel-voting" class="student-tab-panel hidden space-y-8">
+                    <section class="bg-gray-800 p-6 rounded-lg shadow-xl">
+                        <h2 class="text-2xl font-semibold mb-4 text-pink-300">Event Voting</h2>
+                        <p class="text-sm text-gray-400 mb-4">Cast your vote for different event categories. You can only vote once per category!</p>
+                        <div id="votingCategoriesList" class="space-y-6">
+                            <p class="text-gray-400">Loading voting categories...</p>
                         </div>
                     </section>
                 </div>
@@ -2353,13 +2839,30 @@
                 <button id="btnAdminConfirmRefund" class="hidden w-full bg-red-600 hover:bg-red-700 text-white font-bold py-4 px-6 rounded-lg shadow-lg text-lg transition-all"> Process Refund </button> 
                 <button id="btnAdminRechargeCancel" class="w-full bg-gray-700 hover:bg-gray-600 text-white font-bold py-3 px-4 rounded-lg shadow-lg transition-all"> Cancel </button> 
              </div>
-            </main>
+           </main>
         </div>
 
         <!-- VIEW: Loading Overlay --><div id="loadingView" class="hidden fixed inset-0 bg-black bg-opacity-75 flex flex-col items-center justify-center z-50"> <div class="spinner w-16 h-16 border-4 border-gray-600 rounded-full"></div> <p id="loadingMessage" class="text-white text-xl mt-4">Loading...</p> </div>
         <!-- Modal (Alert) --><div id="modal" class="hidden fixed inset-0 bg-black bg-opacity-75 flex items-center justify-center z-50 p-4"> <div class="bg-white text-black p-6 rounded-lg shadow-xl max-w-sm w-full"> <p id="modalMessage" class="text-lg mb-4">This is an alert message.</p> <button id="modalButton" class="w-full bg-blue-600 hover:bg-blue-700 text-white font-bold py-2 px-4 rounded-lg"> OK </button> </div> </div>
         <!-- Modal (Confirm) --><div id="confirmModal" class="hidden fixed inset-0 bg-black bg-opacity-75 flex items-center justify-center z-50 p-4"> <div class="bg-white text-black p-6 rounded-lg shadow-xl max-w-sm w-full"> <p id="confirmModalMessage" class="text-lg mb-6">Are you sure?</p> <div class="flex space-x-4"> <button id="btnConfirmNo" class="w-full bg-gray-600 hover:bg-gray-700 text-white font-bold py-2 px-4 rounded-lg"> Cancel </button> <button id="btnConfirmYes" class="w-full bg-red-600 hover:bg-red-700 text-white font-bold py-2 px-4 rounded-lg"> Yes </button> </div> </div> </div>
         <!-- NEW: Modal (Edit Item) --><div id="editItemModal" class="hidden fixed inset-0 bg-black bg-opacity-75 flex items-center justify-center z-50 p-4"> <div class="bg-white text-black p-6 rounded-lg shadow-xl max-w-sm w-full"> <h3 class="text-xl font-semibold mb-4">Edit Menu Item</h3> <div class="space-y-4"> <div> <label for="editItemNameInput" class="block text-sm font-medium text-gray-700 mb-1">Item Name</label> <input type="text" id="editItemNameInput" class="w-full bg-gray-100 text-black border border-gray-300 rounded-lg p-3"> </div> <div> <label for="editItemPriceInput" class="block text-sm font-medium text-gray-700 mb-1">Item Price</label> <input type="number" id="editItemPriceInput" class="w-full bg-gray-100 text-black border border-gray-300 rounded-lg p-3"> </div> <!-- Hidden fields to store context --> <input type="hidden" id="editItemId"> <input type="hidden" id="editItemStallId"> </div> <div class="flex space-x-4 mt-6"> <button id="btnCancelItemEdit" class="w-full bg-gray-600 hover:bg-gray-700 text-white font-bold py-2 px-4 rounded-lg"> Cancel </button> <button id="btnSaveItemChanges" class="w-full bg-blue-600 hover:bg-blue-700 text-white font-bold py-2 px-4 rounded-lg"> Save Changes </button> </div> </div> </div>
+
+        <!-- NEW: Modal (Edit Voting Options) -->
+        <div id="editVotingOptionsModal" class="hidden fixed inset-0 bg-black bg-opacity-75 flex items-center justify-center z-50 p-4">
+            <div class="bg-white text-black p-6 rounded-lg shadow-xl max-w-sm w-full">
+                <h3 class="text-xl font-semibold mb-4">Edit Options for: <span id="editVotingCategoryTitleDisplay" class="text-blue-600"></span></h3>
+                <div class="space-y-4">
+                    <label for="editVotingOptionsInput" class="block text-sm font-medium text-gray-700 mb-1">Options (One per line)</label>
+                    <textarea id="editVotingOptionsInput" rows="6" class="w-full bg-gray-100 text-black border border-gray-300 rounded-lg p-3" placeholder="One option per line"></textarea>
+                    <!-- Hidden fields to store context -->
+                    <input type="hidden" id="editVotingCategoryId">
+                </div>
+                <div class="flex space-x-4 mt-6">
+                    <button id="btnCancelVotingEdit" class="w-full bg-gray-600 hover:bg-gray-700 text-white font-bold py-2 px-4 rounded-lg"> Cancel </button>
+                    <button id="btnSaveVotingOptions" class="w-full bg-blue-600 hover:bg-blue-700 text-white font-bold py-2 px-4 rounded-lg"> Save Changes </button>
+                </div>
+            </div>
+        </div>
 
         <!-- Global Footer --><footer class="text-center w-full mt-12 mb-4 text-gray-500 text-xs"> <p class="font-semibold">Udaya Public School</p> <p>Mahadev Jharkhandi, Kunraghat, Gorakhpur</p> </footer>
     </div> <!-- End Main Container -->
