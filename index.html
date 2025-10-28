@@ -7,8 +7,9 @@
     <!-- 1. Tailwind CSS --><script src="https://cdn.tailwindcss.com"></script>
     <!-- 2. QR Code Generation Library --><script src="https://cdnjs.cloudflare.com/ajax/libs/qrcodejs/1.0.0/qrcode.min.js"></script>
     <!-- 3. QR Code Scanning Library --><script src="https://unpkg.com/html5-qrcode@2.0.9/dist/html5-qrcode.min.js"></script>
-    <!-- 4. jsPDF Library (NEW) --><script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf/2.5.1/jspdf.umd.min.js"></script>
-    <!-- 5. Firebase SDKs --><script type="module">
+    <!-- 4. jsPDF Library --><script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf/2.5.1/jspdf.umd.min.js"></script>
+    <!-- 5. html2canvas Library (NEW) --><script src="https://cdnjs.cloudflare.com/ajax/libs/html2canvas/1.4.1/html2canvas.min.js"></script>
+    <!-- 6. Firebase SDKs --><script type="module">
         // Import Firebase modules
         import { initializeApp } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-app.js";
         import {
@@ -58,10 +59,15 @@
             allStallMenus: {}, // { stallId: { name: 'Stall Name', menu: [...] } }
             // NEW: Cache for PDF generation
             currentClassStudentList: [], // {id, name, class}
+            // NEW: Cache for Event Info
+            eventInfo: "Welcome to the event! Details will be posted here.",
         };
         let modal, modalMessage, modalButton;
         let confirmModal, confirmModalMessage, btnConfirmYes, btnConfirmNo;
         let confirmCallback = null;
+
+        // NEW: Edit Item Modal Elements
+        let editItemModal, editItemNameInput, editItemPriceInput, btnSaveItemChanges, btnCancelItemEdit, editItemId, editItemStallId;
 
 
         // --- FIREBASE CONFIG & PATHS ---
@@ -77,6 +83,8 @@
         const transactionsRef = () => collection(db, 'artifacts', appId, 'public', 'data', 'transactions');
         const configRef = () => doc(db, 'artifacts', appId, 'public', 'data', 'eventConfig', 'config');
         const classesRef = () => doc(db, 'artifacts', appId, 'public', 'data', 'eventConfig', 'classes');
+        // NEW: Event Info Ref
+        const eventInfoRef = () => doc(db, 'artifacts', appId, 'public', 'data', 'eventConfig', 'info');
 
         // --- INITIALIZATION ---
         document.addEventListener('DOMContentLoaded', () => {
@@ -101,6 +109,16 @@
             btnConfirmYes = document.getElementById('btnConfirmYes');
             btnConfirmNo = document.getElementById('btnConfirmNo');
             loadingMessageEl = document.getElementById('loadingMessage');
+
+            // NEW: Cache Edit Item Modal
+            editItemModal = document.getElementById('editItemModal');
+            editItemNameInput = document.getElementById('editItemNameInput');
+            editItemPriceInput = document.getElementById('editItemPriceInput');
+            btnSaveItemChanges = document.getElementById('btnSaveItemChanges');
+            btnCancelItemEdit = document.getElementById('btnCancelItemEdit');
+            editItemId = document.getElementById('editItemId');
+            editItemStallId = document.getElementById('editItemStallId');
+
 
             // Initialize Firebase
             initFirebase();
@@ -141,6 +159,19 @@
             } else {
                  console.error("Error: Could not find button with ID 'btnConfirmYes'");
             }
+
+            // NEW: Edit Modal Listeners
+            if (btnCancelItemEdit) {
+                 btnCancelItemEdit.onclick = () => editItemModal?.classList.add('hidden');
+            } else {
+                console.error("Error: Could not find button with ID 'btnCancelItemEdit'");
+            }
+
+            if (btnSaveItemChanges) {
+                btnSaveItemChanges.onclick = handleSaveItemChanges;
+            } else {
+                console.error("Error: Could not find button with ID 'btnSaveItemChanges'");
+            }
         });
 
         async function initFirebase() {
@@ -155,7 +186,6 @@
                  appId: "1:755057942199:web:f5fa763b08534bcf1f3732",
                  measurementId: "G-NSLXTCC8JM"
                  };
-
                 // const firebaseConfig = { ... };
                 // ----------------------------------------
 
@@ -201,7 +231,9 @@
                         }
                     } else {
                         console.log("User is authenticated:", user.uid);
+                        // Preload shared data
                         preloadAllStallMenus();
+                        loadEventInfo(); // NEW: Load event info
                         hideLoading();
                         showView('home');
                     }
@@ -229,7 +261,44 @@
             }, (error) => {
                 console.error("Error loading all stall menus:", error);
             });
+            // We keep this running, so don't add to currentUnsubscribes
         }
+
+        // NEW: Function to load and cache event info
+        function loadEventInfo() {
+            const unsub = onSnapshot(eventInfoRef(), (docSnap) => {
+                let content = "Welcome to the event! Event details will be posted here by the admin.";
+                if (docSnap.exists() && docSnap.data().content) {
+                    content = docSnap.data().content;
+                }
+                appState.eventInfo = content;
+
+                // Update any visible event info panels
+                if (appState.currentView === 'studentDashboard') {
+                    const el = document.getElementById('studentEventInfo');
+                    if (el) el.innerHTML = formatEventInfo(content);
+                } else if (appState.currentView === 'stallDashboard') {
+                    const el = document.getElementById('stallEventInfo');
+                    if (el) el.innerHTML = formatEventInfo(content);
+                } else if (appState.currentView === 'adminDashboard') {
+                    const el = document.getElementById('adminEventInfoTextarea');
+                    if (el) el.value = content;
+                }
+            }, (error) => {
+                console.error("Error loading event info:", error);
+                appState.eventInfo = "Error loading event info. Please check back later.";
+            });
+            // This listener also runs globally
+        }
+        
+        // NEW: Helper to format text with line breaks
+        function formatEventInfo(text) {
+             // 1. Escape HTML
+            let escapedText = text.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+            // 2. Replace newlines with <br>
+            return escapedText.replace(/\n/g, '<br>');
+        }
+
 
         // --- VIEW NAVIGATION ---
         function showView(viewId) {
@@ -263,18 +332,19 @@
                 console.log("ALERT:", message);
             }
         }
-       
+        
         function showConfirm(message, onYesCallback) {
              if (confirmModalMessage && confirmModal && btnConfirmYes && btnConfirmNo) {
-                confirmModalMessage.textContent = message;
-                confirmCallback = onYesCallback;
-                confirmModal.classList.remove('hidden');
+                 confirmModalMessage.textContent = message;
+                 confirmCallback = onYesCallback; // Store the callback directly
+                 confirmModal.classList.remove('hidden');
              } else {
                  console.error("Confirm modal elements not found for showConfirm:", message);
                  console.error("Confirmation skipped as modal elements are missing.");
                  confirmCallback = null;
              }
         }
+
 
         function cleanupListeners() {
             currentUnsubscribes.forEach(unsub => unsub());
@@ -294,7 +364,13 @@
                 }
             });
         }
-       
+        
+        // NEW: Utility to escape HTML for data attributes
+        function escapeHTML(str) {
+            if (typeof str !== 'string') return '';
+            return str.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;').replace(/'/g, '&#039;');
+        }
+
 
         function logout() {
             appState.currentUser = null;
@@ -373,7 +449,7 @@
         function attachAdminLoginListeners() {
             const btnBack = document.getElementById('btnAdminLoginBack');
             const btnSubmit = document.getElementById('btnAdminLoginSubmit');
-            const btnReset = document.getElementById('btnAdminResetPassword');
+            // const btnReset = document.getElementById('btnAdminResetPassword'); // REMOVED
 
             if (btnBack) btnBack.onclick = () => showView('home');
             else console.error("btnAdminLoginBack not found");
@@ -387,36 +463,29 @@
                 try {
                     const configSnap = await getDoc(configRef());
                     let correctPassword = 'admin123';
-                    if (!configSnap.exists()) {
-                        await setDoc(configRef(), { adminPassword: correctPassword });
+                    // Check if config exists and has the password field
+                    if (!configSnap.exists() || !configSnap.data()?.adminPassword) {
+                        console.log("Admin password not found in config, setting default 'admin123'.");
+                        await setDoc(configRef(), { adminPassword: correctPassword }, { merge: true }); // Use merge to avoid overwriting other potential config fields
                     } else {
                         correctPassword = configSnap.data().adminPassword;
                     }
-                    if (password === correctPassword) loadAdminDashboard();
-                    else throw new Error('Wrong password.');
+                    if (password === correctPassword) {
+                        loadAdminDashboard();
+                    } else {
+                         throw new Error('Wrong password.');
+                    }
                 } catch (error) {
                     console.error("Admin Login Error:", error);
-                    showAlert(error.message);
-                    passwordInput.value = '';
+                    showAlert(error.message); // Show the specific error (e.g., "Wrong password.")
+                    passwordInput.value = ''; // Clear password field on error
                     hideLoading();
                 }
             };
              else console.error("btnAdminLoginSubmit not found");
 
-            if (btnReset) btnReset.onclick = () => {
-                showConfirm("Reset admin password to 'admin123'?", async () => {
-                    showLoading('Resetting...');
-                    try {
-                        await setDoc(configRef(), { adminPassword: 'admin123' });
-                        showAlert('Password reset to "admin123".');
-                    } catch (error) {
-                        showAlert('Error resetting: ' + error.message);
-                    } finally {
-                        hideLoading();
-                    }
-                });
-            };
-             else console.error("btnAdminResetPassword not found");
+            // REMOVED 'btnAdminResetPassword' listener logic
+            // if (btnReset) ...
         }
 
 
@@ -440,9 +509,14 @@
                 };
             });
 
+            // Panel: Students
             const btnGenStudent = document.getElementById('btnAdminGenerateStudent');
             if (btnGenStudent) btnGenStudent.onclick = () => generateUser('student');
             else console.error("btnAdminGenerateStudent not found");
+
+            const btnBulkImport = document.getElementById('btnAdminBulkImport');
+            if (btnBulkImport) btnBulkImport.onclick = handleBulkImport;
+            else console.error("btnAdminBulkImport not found");
 
             const btnRecharge = document.getElementById('btnAdminRechargeStudent');
             if (btnRecharge) btnRecharge.onclick = startAdminRechargeScan;
@@ -452,15 +526,15 @@
             if (classSelect) classSelect.onchange = handleClassFilterChange;
             else console.error("adminSearchClassSelect not found");
 
-            // NEW: Add listener for bulk PDF download button
             const btnDownloadAll = document.getElementById('btnDownloadAllPasses');
             if (btnDownloadAll) btnDownloadAll.onclick = generateClassPDF;
             else console.error("btnDownloadAllPasses not found");
 
-            const btnAddClass = document.getElementById('btnAdminAddClass');
-            if (btnAddClass) btnAddClass.onclick = addAdminClass;
-            else console.error("btnAdminAddClass not found");
-
+            const btnSearchStudent = document.getElementById('btnAdminSearchStudent');
+            if (btnSearchStudent) btnSearchStudent.onclick = searchStudentByName;
+            else console.error("btnAdminSearchStudent not found");
+            
+            // Panel: Stalls
             const btnGenStall = document.getElementById('btnAdminGenerateStall');
             if (btnGenStall) btnGenStall.onclick = () => generateUser('stall');
             else console.error("btnAdminGenerateStall not found");
@@ -472,10 +546,39 @@
             const btnSearchStall = document.getElementById('btnAdminSearchStall');
             if (btnSearchStall) btnSearchStall.onclick = searchStall;
              else console.error("btnAdminSearchStall not found");
+             
+            // Panel: Classes
+            const btnAddClass = document.getElementById('btnAdminAddClass');
+            if (btnAddClass) btnAddClass.onclick = addAdminClass;
+            else console.error("btnAdminAddClass not found");
 
+            // Panel: Reports
             const btnExport = document.getElementById('btnExportCSV');
             if (btnExport) btnExport.onclick = exportTransactionsToCSV;
             else console.error("btnExportCSV not found");
+            
+            // NEW: Panel: Event
+            const btnSaveEventInfo = document.getElementById('btnAdminSaveEventInfo');
+            if(btnSaveEventInfo) btnSaveEventInfo.onclick = handleSaveEventInfo;
+            else console.error("btnAdminSaveEventInfo not found");
+        }
+
+        // NEW: Function to save event info
+        async function handleSaveEventInfo() {
+            const textarea = document.getElementById('adminEventInfoTextarea');
+            if (!textarea) return console.error("adminEventInfoTextarea not found");
+            
+            const newContent = textarea.value;
+            showLoading("Saving event info...");
+            try {
+                await setDoc(eventInfoRef(), { content: newContent }, { merge: true });
+                showAlert("Event info saved successfully!");
+            } catch (error) {
+                console.error("Error saving event info:", error);
+                showAlert("Error saving event info: " + error.message);
+            } finally {
+                hideLoading();
+            }
         }
 
 
@@ -540,20 +643,20 @@
         }
         function downloadQR(qrContainerId, name) {
              try {
-                const qrContainer = document.getElementById(qrContainerId);
-                if (!qrContainer) { throw new Error(`QR container ${qrContainerId} not found`); }
-                const qrImage = qrContainer.querySelector('img');
-                if (!qrImage) throw new Error('QR image not found within container');
-                const link = document.createElement('a');
-                link.href = qrImage.src;
-                link.download = `qr_${name.replace(/ /g, '_')}.png`;
-                document.body.appendChild(link);
-                link.click();
-                document.body.removeChild(link);
-            } catch (error) {
-                console.error('Download QR Error:', error);
-                showAlert('Could not download QR code.');
-            }
+                 const qrContainer = document.getElementById(qrContainerId);
+                 if (!qrContainer) { throw new Error(`QR container ${qrContainerId} not found`); }
+                 const qrImage = qrContainer.querySelector('img');
+                 if (!qrImage) throw new Error('QR image not found within container');
+                 const link = document.createElement('a');
+                 link.href = qrImage.src;
+                 link.download = `qr_${name.replace(/ /g, '_')}.png`;
+                 document.body.appendChild(link);
+                 link.click();
+                 document.body.removeChild(link);
+             } catch (error) {
+                 console.error('Download QR Error:', error);
+                 showAlert('Could not download QR code.');
+             }
         }
 
         // MODIFIED: Show/hide bulk download button and cache student list
@@ -606,54 +709,49 @@
             }
         }
 
-        // --- NEW PDF GENERATION FUNCTIONS ---
+        // --- NEW/MODIFIED PDF GENERATION FUNCTIONS ---
 
         /**
-         * Generates a QR code for the given text and returns it as a Data URL.
-         * Uses a temporary, hidden container to render the QR code image.
+         * Helper function to return the HTML string for a single pass.
+         * @param {object} student - The student data object {id, name, class}
+         * @param {string} qrId - The unique ID to use for the QR code container element
+         * @returns {string} - The HTML string for the pass
          */
-        async function generateQRDataURL(text, container) {
-            container.innerHTML = ''; // Clear previous QR
-            return new Promise((resolve, reject) => {
-                try {
-                    // Generate QR code
-                    new QRCode(container, {
-                        text: text,
-                        width: 256,
-                        height: 256,
-                        colorDark: "#000000",
-                        colorLight: "#ffffff",
-                        correctLevel: QRCode.CorrectLevel.H
-                    });
-
-                    // Use a short delay to allow the QR code library to render the <img> tag
-                    setTimeout(() => {
-                        const img = container.querySelector('img');
-                        if (img && img.src) {
-                            resolve(img.src);
-                        } else {
-                            // Fallback check for canvas render
-                            const canvas = container.querySelector('canvas');
-                            if (canvas) {
-                                resolve(canvas.toDataURL('image/png'));
-                            } else {
-                                reject(new Error('QR code image or canvas element not found after render.'));
-                            }
-                        }
-                    }, 100); // 100ms should be safe for QR generation
-                } catch (e) {
-                    reject(e);
-                }
-            });
+        function getPassHtml(student, qrId) {
+            return `
+                <div class="printable-area bg-white text-black p-6 rounded-lg shadow-lg border-4 border-blue-600" style="width: 350px; height: auto; box-sizing: border-box;">
+                    <div class="text-center border-b pb-4 border-gray-300">
+                        <h3 class="text-xl font-bold text-gray-800" style="font-size: 1.25rem; line-height: 1.75rem;">Udaya Public School</h3>
+                        <p class="text-xs text-gray-600" style="font-size: 0.75rem; line-height: 1rem;">Mahadev Jharkhandi, Kunraghat, Gorakhpur</p>
+                    </div>
+                    <div class="my-4 text-center">
+                        <p class="text-sm font-medium text-gray-700" style="font-size: 0.875rem; line-height: 1.25rem;">ANNUAL FEST 2025-26</p>
+                        <p class="text-2xl font-bold text-blue-600" style="font-size: 1.5rem; line-height: 2rem; color: #2563EB;">ENTRY PASS</p>
+                        <p class="text-sm font-semibold text-gray-700" style="font-size: 0.875rem; line-height: 1.25rem;">Date: 1-FEB-2026</p>
+                    </div>
+                    <div class="my-4 text-center">
+                        <p class="text-lg font-bold text-black" style="font-size: 1.125rem; line-height: 1.75rem;">${student.name}</p>
+                        <p class="text-base text-gray-700" style="font-size: 1rem; line-height: 1.5rem;">Class: ${student.class || 'N/A'}</p>
+                    </div>
+                    <div id="${qrId}" class="flex justify-center p-4 bg-white rounded-lg" style="display: flex; justify-content: center; padding: 1rem; background-color: #ffffff; border-radius: 0.5rem;"></div>
+                    <p class="text-xs text-center break-all text-gray-500" style="font-size: 0.75rem; line-height: 1rem; word-break: break-all;">${student.id}</p>
+                </div>`;
         }
 
+
         /**
-         * Generates a multi-page PDF for all students in the currently selected class.
+         * Generates a multi-page PDF for all students in the currently selected class
+         * using html2canvas to render the pass design.
          */
         async function generateClassPDF() {
             const students = appState.currentClassStudentList;
             if (!students || students.length === 0) {
                 return showAlert("No students found for the selected class.");
+            }
+            
+            // Check for libraries
+            if (typeof window.jspdf === 'undefined' || typeof window.html2canvas === 'undefined') {
+                return showAlert("Error: PDF generation libraries (jsPDF or html2canvas) are not loaded.");
             }
 
             const className = students[0].class || "all_students";
@@ -663,15 +761,16 @@
             const { jsPDF } = window.jspdf;
             const doc = new jsPDF('portrait', 'mm', 'a4'); // A4: 210 x 297 mm
 
-            // 2. Create temporary QR container
-            let qrTempContainer = document.getElementById('qr-temp-container');
-            if (!qrTempContainer) {
-                qrTempContainer = document.createElement('div');
-                qrTempContainer.id = 'qr-temp-container';
-                qrTempContainer.style.position = 'absolute';
-                qrTempContainer.style.left = '-9999px'; // Hide off-screen
-                qrTempContainer.style.top = '-9999px';
-                document.body.appendChild(qrTempContainer);
+            // 2. Create temporary render container
+            let renderContainer = document.getElementById('pdf-render-container');
+            if (!renderContainer) {
+                renderContainer = document.createElement('div');
+                renderContainer.id = 'pdf-render-container';
+                renderContainer.style.position = 'absolute';
+                renderContainer.style.left = '-9999px'; // Hide off-screen
+                renderContainer.style.top = '0';
+                renderContainer.style.width = '350px'; // Fixed width for consistent html2canvas render
+                document.body.appendChild(renderContainer);
             }
 
             // 3. Layout Constants (in mm)
@@ -683,8 +782,10 @@
             const USABLE_WIDTH = A4_WIDTH - 2 * MARGIN;
             const USABLE_HEIGHT = A4_HEIGHT - 2 * MARGIN;
 
-            const PASS_WIDTH = (USABLE_WIDTH - GUTTER) / 2;
-            const PASS_HEIGHT = (USABLE_HEIGHT - (2 * GUTTER)) / 3;
+            const PASS_WIDTH = (USABLE_WIDTH - GUTTER) / 2; // Approx 92mm
+            // Calculate pass height based on 350px width pass, which has ~450px height
+            const PASS_ASPECT_RATIO = (450 / 350); // Rough aspect ratio, will be corrected by image
+            let PASS_HEIGHT = (USABLE_HEIGHT - (2 * GUTTER)) / 3; // Approx 88mm
 
             // X,Y positions for the top-left corner of each of the 6 passes
             const positions = [
@@ -710,78 +811,81 @@
 
                 showLoading(`Generating PDF... (${studentCounter + 1} / ${students.length})`);
 
-                // Generate QR code data URL
-                let qrDataUrl;
+                // 1. Create unique ID for QR container
+                const qrId = `pdf-qr-${student.id}`;
+                
+                // 2. Set the HTML for the current pass
+                renderContainer.innerHTML = getPassHtml(student, qrId);
+                
+                // 3. Find the QR element and render the QR code
+                const qrElement = document.getElementById(qrId);
+                if (!qrElement) {
+                    console.error("Could not find QR element for PDF render");
+                    continue; // Skip this student
+                }
+                new QRCode(qrElement, {
+                    text: student.id,
+                    width: 200,
+                    height: 200,
+                    colorDark: "#000",
+                    colorLight: "#fff",
+                    correctLevel: QRCode.CorrectLevel.H
+                });
+
+                // 4. Wait for QR to render, then use html2canvas
+                //    We must wait for the QRCode library to generate the <img> tag.
+                await new Promise(resolve => setTimeout(resolve, 150)); 
+
+                let canvas;
                 try {
-                    qrDataUrl = await generateQRDataURL(student.id, qrTempContainer);
+                    const passElement = renderContainer.firstElementChild;
+                    if (!passElement) throw new Error("Pass element not found in render container");
+                    
+                    canvas = await html2canvas(passElement, {
+                        scale: 2, // Increase resolution for better quality
+                        useCORS: true,
+                        logging: false
+                    });
                 } catch (error) {
-                    console.error("Failed to generate QR for", student.name, error);
-                    qrDataUrl = null; // We'll skip drawing it if it fails
+                    console.error("html2canvas failed for", student.name, error);
+                    continue; // Skip this student
                 }
 
-                // --- Draw Pass ---
-                doc.setDrawColor(200, 200, 200); // Light grey border for cutting
+                // 5. Get image data
+                const imgData = canvas.toDataURL('image/jpeg', 0.9); // Use JPEG for smaller size
+
+                // 6. Add image to PDF
+                // Calculate aspect ratio
+                const imgProps = doc.getImageProperties(imgData);
+                const pdfImgHeight = (imgProps.height * PASS_WIDTH) / imgProps.width;
+                
+                let finalHeight = pdfImgHeight;
+                let finalWidth = PASS_WIDTH;
+                
+                // Check if it fits, if not, scale by height
+                if (pdfImgHeight > PASS_HEIGHT) {
+                    finalHeight = PASS_HEIGHT;
+                    finalWidth = (imgProps.width * PASS_HEIGHT) / imgProps.height;
+                }
+
+                // Center the image within the pass slot
+                const xOffset = x + (PASS_WIDTH - finalWidth) / 2;
+                const yOffset = y + (PASS_HEIGHT - finalHeight) / 2;
+
+                doc.addImage(imgData, 'JPEG', xOffset, yOffset, finalWidth, finalHeight);
+
+                // Add cut border
+                doc.setDrawColor(220, 220, 220); // Light grey border for cutting
                 doc.rect(x, y, PASS_WIDTH, PASS_HEIGHT);
 
-                const FONT_TITLE = 9;
-                const FONT_HEADER = 8;
-                const FONT_NAME = 11;
-                const FONT_DETAIL = 9;
-                const FONT_ID = 5;
-                const QR_SIZE = 30; // 30mm x 30mm
-                const PADDING = 4; // Inner padding
-
-                let currentY = y + PADDING + 2; // Start Y
-
-                // School Name
-                doc.setFont('helvetica', 'bold');
-                doc.setFontSize(FONT_TITLE);
-                doc.text('Udaya Public School', x + PASS_WIDTH / 2, currentY, { align: 'center' });
-                currentY += FONT_TITLE * 0.5;
-
-                // Event Name
-                doc.setFont('helvetica', 'normal');
-                doc.setFontSize(FONT_HEADER);
-                doc.text('ANNUAL FEST 2025-26', x + PASS_WIDTH / 2, currentY, { align: 'center' });
-                currentY += FONT_HEADER * 0.5;
-
-                // Pass Type
-                doc.setFont('helvetica', 'bold');
-                doc.setFontSize(FONT_HEADER);
-                doc.text('ENTRY PASS', x + PASS_WIDTH / 2, currentY, { align: 'center' });
-                currentY += FONT_HEADER * 0.5 + 4; // Add extra gap
-
-                // Student Name
-                doc.setFontSize(FONT_NAME);
-                doc.setFont('helvetica', 'bold');
-                doc.text(student.name, x + PADDING, currentY, { maxWidth: PASS_WIDTH - PADDING * 2 - QR_SIZE - 5 });
-                currentY += FONT_NAME * 0.5;
-
-                // Class
-                doc.setFontSize(FONT_DETAIL);
-                doc.setFont('helvetica', 'normal');
-                doc.text(`Class: ${student.class || 'N/A'}`, x + PADDING, currentY, { maxWidth: PASS_WIDTH - PADDING * 2 - QR_SIZE - 5 });
-                currentY += FONT_DETAIL * 0.5;
-
-                // Draw QR Code
-                if (qrDataUrl) {
-                    const qrX = x + PASS_WIDTH - PADDING - QR_SIZE;
-                    const qrY = y + PADDING + 15; // Align QR code vertically
-                    doc.addImage(qrDataUrl, 'PNG', qrX, qrY, QR_SIZE, QR_SIZE);
-                }
-                
-                // Student ID (at the bottom)
-                doc.setFontSize(FONT_ID);
-                doc.setFont('helvetica', 'normal');
-                doc.setTextColor(100, 100, 100); // Grey text for ID
-                doc.text(student.id, x + PASS_WIDTH / 2, y + PASS_HEIGHT - PADDING, { align: 'center', maxWidth: PASS_WIDTH - PADDING * 2 });
-                doc.setTextColor(0, 0, 0); // Reset text color
-
                 studentCounter++;
+                
+                // 7. Clean up container for next loop
+                renderContainer.innerHTML = '';
             }
 
             // 5. Save PDF
-            qrTempContainer.innerHTML = ''; // Clean up temp container
+            renderContainer.innerHTML = ''; // Clean up temp container
             hideLoading();
             doc.save(`entry_passes_${className.replace(/ /g, '_')}.pdf`);
         }
@@ -800,23 +904,24 @@
                 const q = query(usersRef(), where('role', '==', 'stall'), where('name', '==', stallName));
                 const snapshot = await getDocs(q);
                 if (snapshot.empty) throw new Error('No stall found with that name.');
-                const stallUser = snapshot.docs[0].data();
+                const stallUserDoc = snapshot.docs[0];
+                const stallUser = { id: stallUserDoc.id, ...stallUserDoc.data() };
                 qrContainer.classList.remove('hidden');
-                const qrInnerId = `qr-stall-${stallUser.userId}`;
+                const qrInnerId = `qr-stall-${stallUser.id}`;
                 qrContainer.innerHTML = `
                     <h3 class="text-lg font-semibold mb-2 text-black">${stallUser.name}</h3>
                     <div id="${qrInnerId}" class="flex justify-center"></div>
-                    <p class="text-xs mt-2 break-all text-black">${stallUser.userId}</p>
+                    <p class="text-xs mt-2 break-all text-black">${stallUser.id}</p>
                     <button class="w-full bg-blue-600 hover:bg-blue-700 text-white font-bold py-2 px-4 rounded-lg mt-4 btn-download-stall-qr">Download QR</button>
                 `;
                 const qrElement = document.getElementById(qrInnerId);
-                 if (qrElement) new QRCode(qrElement, { text: stallUser.userId, width: 200, height: 200 });
+                 if (qrElement) new QRCode(qrElement, { text: stallUser.id, width: 200, height: 200 });
                  else console.error(`QR container ${qrInnerId} not found`);
-               
+                
                 const btnDownload = qrContainer.querySelector('.btn-download-stall-qr');
                 if(btnDownload) btnDownload.onclick = () => downloadQR(qrInnerId, stallUser.name);
                 else console.error("Stall QR download button not found");
-               
+                
                 stallNameInput.value = '';
             } catch (error) {
                 showAlert(error.message);
@@ -824,11 +929,54 @@
             } finally { hideLoading(); }
         }
 
+        // +++ NEW FUNCTION +++
+        async function searchStudentByName() {
+            const studentNameInput = document.getElementById('adminSearchStudentName');
+            const qrContainer = document.getElementById('adminSearchStudentQRContainer');
+            if (!studentNameInput || !qrContainer) {
+                console.error("Missing elements for student name search");
+                return;
+            }
+            const studentName = studentNameInput.value;
+            if (!studentName) return showAlert('Please enter student name.');
+
+            showLoading('Searching...');
+            qrContainer.innerHTML = '';
+            qrContainer.classList.add('hidden'); // Hide until found
+
+            try {
+                const q = query(usersRef(), where('role', '==', 'student'), where('name', '==', studentName));
+                const snapshot = await getDocs(q);
+                if (snapshot.empty) throw new Error('No student found with that name.');
+
+                const studentDoc = snapshot.docs[0];
+                const studentUser = { id: studentDoc.id, ...studentDoc.data() };
+
+                // Use the existing displayUserQR function which handles UI
+                displayUserQR(qrContainer, studentUser);
+                
+                studentNameInput.value = '';
+            } catch (error) {
+                showAlert(error.message);
+                qrContainer.innerHTML = `<p class="text-red-500">${error.message}</p>`;
+                qrContainer.classList.remove('hidden'); // Show error
+            } finally {
+                hideLoading();
+            }
+        }
+
 
         function loadAdminDashboard() {
              showView('adminDashboard');
             appState.currentUser = { id: 'admin', role: 'admin' };
-            loadAdminStudents(); loadAdminStallsAndMenus(); loadAdminReports(); loadAdminClasses();
+            // Load panel data
+            loadAdminStudents(); 
+            loadAdminStallsAndMenus(); 
+            loadAdminReports(); 
+            loadAdminClasses();
+            // Event info is loaded globally, but we ensure textarea is populated
+            const eventTextarea = document.getElementById('adminEventInfoTextarea');
+            if (eventTextarea) eventTextarea.value = appState.eventInfo;
         }
 
         async function generateUser(role) {
@@ -849,10 +997,17 @@
             try {
                 const newUser = { name, role, balance: role === 'student' ? 0 : null, class: studentClass, createdAt: serverTimestamp() };
                 const newDocRef = await addDoc(usersRef(), newUser);
-                await updateDoc(newDocRef, { userId: newDocRef.id });
-                if (role === 'stall') await setDoc(doc(stallsRef(), newDocRef.id), { name, ownerId: newDocRef.id, menu: [] });
+                
+                // We will use the doc ID as the main user ID
+                const finalUserId = newDocRef.id;
+                await updateDoc(newDocRef, { userId: finalUserId }); // Add userId field
+                
+                if (role === 'stall') {
+                    // For stalls, create a matching doc in the 'stalls' collection using the same ID
+                    await setDoc(doc(stallsRef(), finalUserId), { name, ownerId: finalUserId, menu: [] });
+                }
 
-                const userForQR = { id: newDocRef.id, name, class: studentClass, role };
+                const userForQR = { id: finalUserId, name, class: studentClass, role };
                 if (role === 'student') {
                     displayUserQR(qrContainer, userForQR);
                 } else { // Stall QR
@@ -898,8 +1053,10 @@
                 searchSelectEl.innerHTML = '<option value="">Select Class</option>' + optionsHTML;
                 genSelectEl.innerHTML = '<option value="">Select Class</option>' + optionsHTML;
 
+                // FIX: Capture data *before* calling showConfirm
                 document.querySelectorAll('.btn-delete-class').forEach(btn => {
-                    btn.onclick = (e) => showConfirm(`Delete class "${e.target.dataset.name}"?`, () => deleteAdminClass(e.target.dataset.name));
+                    const className = btn.dataset.name; // Capture name here
+                    btn.onclick = () => showConfirm(`Delete class "${className}"?`, () => deleteAdminClass(className));
                 });
             }, error => console.error("Error loading classes:", error));
             currentUnsubscribes.push(unsub);
@@ -925,28 +1082,45 @@
                 const listEl = document.getElementById('adminStudentList');
                 if (!listEl) { console.error("adminStudentList not found"); return; }
                 listEl.innerHTML = snapshot.empty ? '<p>No students.</p>' : snapshot.docs.map(d => `<div class="bg-gray-700 p-3 rounded-lg flex justify-between items-center"><div><span>${d.data().name} (${d.data().class||'N/A'})</span><span class="text-green-400 block text-sm">₹${d.data().balance.toFixed(2)}</span></div><button data-id="${d.id}" data-name="${d.data().name}" class="btn-delete-student bg-red-600 hover:bg-red-700 text-white px-3 py-1 rounded-lg text-sm">Delete</button></div>`).join('');
+
+                // FIX: Capture data *before* calling showConfirm
                 document.querySelectorAll('.btn-delete-student').forEach(btn => {
-                    btn.onclick = (e) => showConfirm(`Delete "${e.currentTarget.dataset.name}"?`, () => _deleteStudent(e.currentTarget.dataset.id));
+                    const studentId = btn.dataset.id; // Capture id here
+                    const studentName = btn.dataset.name; // Capture name here
+                    btn.onclick = () => showConfirm(`Delete "${studentName}"?`, () => _deleteStudent(studentId));
                 });
             }, error => console.error("Error loading students:", error)); currentUnsubscribes.push(unsub);
         }
 
-
+        // --- MODIFIED: Added Edit/Delete buttons for admin ---
         function renderMenuList(menu, stallId, isAdminView) {
             if (!menu || menu.length === 0) return '<p class="text-sm text-gray-400">No menu items yet.</p>';
 
             return menu.map(item => `
                 <div class="flex justify-between items-center text-sm bg-gray-600 px-3 py-2 rounded">
-                    <div>
-                        <span>${item.name}</span>
-                        <span class="ml-2 font-medium text-blue-300">₹${item.price.toFixed(2)}</span>
+                    <div class="flex-1 min-w-0">
+                        <span class="block font-medium truncate">${item.name}</span>
+                        <span class="font-medium text-blue-300">₹${item.price.toFixed(2)}</span>
+                        <span class="ml-2 text-xs ${item.stock <= 0 ? 'text-red-400 font-bold' : 'text-gray-300'}">(${item.stock || 0} left)</span>
                     </div>
-                    <div class="flex items-center space-x-2">
-                        <span class="text-xs ${item.stock <= 0 ? 'text-red-400 font-bold' : 'text-gray-300'}">(${item.stock || 0} left)</span>
+                    <div class="flex items-center space-x-2 flex-shrink-0 ml-2">
                         ${isAdminView ? `
                         <input type="number" value="${item.stock || 0}" min="0" 
-                                class="admin-stock-input bg-gray-700 text-white w-16 text-center rounded px-1 py-0.5 border border-gray-500 focus:ring-blue-500 focus:border-blue-500" 
+                                class="admin-stock-input bg-gray-700 text-white w-14 text-center rounded px-1 py-0.5 border border-gray-500 focus:ring-blue-500 focus:border-blue-500" 
                                 data-item-id="${item.id}" data-stall-id="${stallId}">
+                        <button class="btn-edit-menu-item bg-blue-600 hover:bg-blue-700 text-white px-2 py-1 rounded text-xs"
+                                data-stall-id="${stallId}"
+                                data-item-id="${item.id}"
+                                data-name="${escapeHTML(item.name)}"
+                                data-price="${item.price}">
+                            Edit
+                        </button>
+                        <button class="btn-delete-menu-item bg-red-600 hover:bg-red-700 text-white px-2 py-1 rounded text-xs"
+                                data-stall-id="${stallId}"
+                                data-item-id="${item.id}"
+                                data-name="${escapeHTML(item.name)}">
+                            Del
+                        </button>
                         ` : ''}
                     </div>
                 </div>
@@ -990,7 +1164,96 @@
             }
         }
 
+        // --- NEW: Function to show the edit item modal ---
+        function showEditItemModal(e) {
+            const { stallId, itemId, name, price } = e.currentTarget.dataset;
+            if (editItemModal && editItemNameInput && editItemPriceInput && editItemId && editItemStallId) {
+                editItemNameInput.value = name;
+                editItemPriceInput.value = price;
+                editItemId.value = itemId;
+                editItemStallId.value = stallId;
+                editItemModal.classList.remove('hidden');
+            } else {
+                console.error("Edit item modal elements not found");
+                showAlert("Error: Could not open edit dialog.");
+            }
+        }
 
+        // --- NEW: Function to handle saving changes from the modal ---
+        async function handleSaveItemChanges() {
+            if (!editItemNameInput || !editItemPriceInput || !editItemId || !editItemStallId) return;
+
+            const newName = editItemNameInput.value;
+            const newPrice = parseFloat(editItemPriceInput.value);
+            const itemId = editItemId.value;
+            const stallId = editItemStallId.value;
+
+            if (!newName || isNaN(newPrice) || newPrice <= 0 || !itemId || !stallId) {
+                return showAlert("Please enter a valid name and price (price > 0).");
+            }
+
+            showLoading("Saving changes...");
+            const success = await updateMenuItem(stallId, itemId, newName, newPrice);
+            if (success) {
+                editItemModal.classList.add('hidden');
+                showAlert("Item updated successfully.");
+            }
+            hideLoading();
+        }
+
+        // --- NEW: Transactional function to update item name/price ---
+        async function updateMenuItem(stallId, itemId, newName, newPrice) {
+            const stallDocRef = doc(stallsRef(), stallId);
+            try {
+                await runTransaction(db, async (transaction) => {
+                    const stallDoc = await transaction.get(stallDocRef);
+                    if (!stallDoc.exists()) throw new Error("Stall not found.");
+
+                    const menu = stallDoc.data().menu || [];
+                    const itemIndex = menu.findIndex(item => item.id === itemId);
+                    if (itemIndex === -1) throw new Error("Menu item not found.");
+
+                    const updatedMenu = menu.map((item, index) =>
+                        index === itemIndex ? { ...item, name: newName, price: newPrice } : item
+                    );
+
+                    transaction.update(stallDocRef, { menu: updatedMenu });
+                });
+                console.log(`Item ${itemId} in stall ${stallId} updated.`);
+                return true;
+            } catch (error) {
+                console.error("Update Item Error:", error);
+                showAlert(`Error updating item: ${error.message}`);
+                return false;
+            }
+        }
+
+        // --- NEW: Transactional function to delete a menu item ---
+        async function deleteMenuItem(stallId, itemId, itemName) {
+            showLoading(`Deleting ${itemName}...`);
+            const stallDocRef = doc(stallsRef(), stallId);
+            try {
+                await runTransaction(db, async (transaction) => {
+                    const stallDoc = await transaction.get(stallDocRef);
+                    if (!stallDoc.exists()) throw new Error("Stall not found.");
+
+                    const menu = stallDoc.data().menu || [];
+                    const updatedMenu = menu.filter(item => item.id !== itemId);
+
+                    transaction.update(stallDocRef, { menu: updatedMenu });
+                });
+                console.log(`Item ${itemId} deleted from stall ${stallId}.`);
+                showAlert(`${itemName} deleted successfully.`);
+            } catch (error) {
+                console.error("Delete Item Error:", error);
+                showAlert(`Error deleting item: ${error.message}`);
+            } finally {
+                hideLoading();
+            }
+        }
+
+
+        // --- MODIFIED: Added listeners for new/changed functionality ---
         function loadAdminStallsAndMenus() {
             const q = query(stallsRef());
             const unsub = onSnapshot(q, (snapshot) => {
@@ -999,8 +1262,8 @@
                  if (!listEl || !selectEl) { console.error("Missing stall list/select elements"); return; }
 
 
-                if (snapshot.empty) {
-                    listEl.innerHTML = '<p class="text-gray-400">No stalls.</p>'; selectEl.innerHTML = '<option value="">No stalls</option>'; return;
+                 if (snapshot.empty) {
+                     listEl.innerHTML = '<p class="text-gray-400">No stalls.</p>'; selectEl.innerHTML = '<option value="">No stalls</option>'; return;
                  }
 
                 listEl.innerHTML = snapshot.docs.map(doc => {
@@ -1018,12 +1281,29 @@
 
                 selectEl.innerHTML = snapshot.docs.map(doc => `<option value="${doc.id}">${doc.data().name}</option>`).join('');
 
+                // FIX: Capture data *before* calling showConfirm
                 document.querySelectorAll('.btn-delete-stall').forEach(btn => {
-                    btn.onclick = (e) => showConfirm(`Delete stall "${e.currentTarget.dataset.name}"?`, () => _deleteStall(e.currentTarget.dataset.id));
+                    const stallId = btn.dataset.id; // Capture id here
+                    const stallName = btn.dataset.name; // Capture name here
+                    btn.onclick = () => showConfirm(`Delete stall "${stallName}"?`, () => _deleteStall(stallId));
                 });
-
+                
+                // Remove old listeners and add new ones for item management
                 listEl.removeEventListener('change', handleStockInputChange);
                 listEl.addEventListener('change', handleStockInputChange);
+
+                document.querySelectorAll('.btn-edit-menu-item').forEach(btn => {
+                    btn.onclick = showEditItemModal;
+                });
+
+                document.querySelectorAll('.btn-delete-menu-item').forEach(btn => {
+                     // Data capture is already correct here
+                    const { stallId, itemId, name } = btn.dataset;
+                    btn.onclick = () => {
+                        showConfirm(`Delete item "${name}"?`, () => deleteMenuItem(stallId, itemId, name));
+                    };
+                });
+
 
             }, error => console.error("Error loading stalls:", error));
             currentUnsubscribes.push(unsub);
@@ -1036,9 +1316,9 @@
                 const newStock = e.target.value;
                 const success = await updateItemStock(stallId, itemId, newStock);
                 if (!success) {
-                   const stallData = appState.allStallMenus[stallId]; 
-                   const oldStock = stallData?.menu?.find(i=>i.id===itemId)?.stock ?? 0;
-                   e.target.value = oldStock;
+                  const stallData = appState.allStallMenus[stallId]; 
+                  const oldStock = stallData?.menu?.find(i=>i.id===itemId)?.stock ?? 0;
+                  e.target.value = oldStock;
                 }
             }
         }
@@ -1061,7 +1341,7 @@
             const priceInput = document.getElementById('adminItemPrice');
             const stockInput = document.getElementById('adminItemStock');
              if (!stallSelect || !nameInput || !priceInput || !stockInput) { console.error("Missing elements for adding menu item"); return; }
-           
+            
             const stallId = stallSelect.value;
             const name = nameInput.value;
             const price = parseFloat(priceInput.value);
@@ -1099,6 +1379,7 @@
             const listEl = document.getElementById('adminTransactionList');
             const totalSalesEl = document.getElementById('adminTotalSales');
             const totalRechargedEl = document.getElementById('adminTotalRecharged');
+            const totalRefundedEl = document.getElementById('adminTotalRefunded'); // NEW
             const outstandingBalanceEl = document.getElementById('adminOutstandingBalance');
             const totalTransactionsEl = document.getElementById('adminTotalTransactions');
             const avgPurchaseValueEl = document.getElementById('adminAvgPurchaseValue');
@@ -1106,18 +1387,19 @@
             const topItemsEl = document.getElementById('adminTopItemsList');
             const classSpendingEl = document.getElementById('adminClassSpendingSummary');
 
-            if (!listEl || !totalSalesEl || !totalRechargedEl || !outstandingBalanceEl || !totalTransactionsEl || !avgPurchaseValueEl || !stallSalesEl || !topItemsEl || !classSpendingEl) {
+            if (!listEl || !totalSalesEl || !totalRechargedEl || !outstandingBalanceEl || !totalTransactionsEl || !avgPurchaseValueEl || !stallSalesEl || !topItemsEl || !classSpendingEl || !totalRefundedEl) { // MODIFIED
                 console.error("One or more report elements are missing from the DOM.");
                 return;
             }
 
-            let totalSales = 0, totalRecharged = 0, purchaseCount = 0, rechargeCount = 0;
+            let totalSales = 0, totalRecharged = 0, totalRefunded = 0, purchaseCount = 0; // MODIFIED
             const stallSales = {}, topItems = {}, classSpending = {};
 
              if (transactions.length === 0) {
                  listEl.innerHTML = '<p class="text-gray-400">No transactions yet.</p>';
                  totalSalesEl.textContent = '₹0.00';
                  totalRechargedEl.textContent = '₹0.00';
+                 totalRefundedEl.textContent = '₹0.00'; // NEW
                  outstandingBalanceEl.textContent = '₹0.00';
                  totalTransactionsEl.textContent = '0';
                  avgPurchaseValueEl.textContent = '₹0.00';
@@ -1134,13 +1416,19 @@
                     if (tx.items) tx.items.forEach(item => topItems[item.name] = (topItems[item.name] || 0) + item.quantity);
                     const studentClass = studentClassMap.get(tx.studentId) || 'N/A';
                     classSpending[studentClass] = (classSpending[studentClass] || 0) + tx.amount;
-                } else if (tx.type === 'recharge') { totalRecharged += tx.amount; rechargeCount++; }
+                } else if (tx.type === 'recharge') { 
+                    totalRecharged += tx.amount; 
+                } else if (tx.type === 'refund') { // NEW
+                    totalRefunded += tx.amount;
+                }
             });
 
-            const outstanding = totalRecharged - totalSales; const totalTx = purchaseCount + rechargeCount;
+            const outstanding = totalRecharged - totalSales - totalRefunded; // MODIFIED
+            const totalTx = transactions.length; // MODIFIED
             const avgPurchase = purchaseCount > 0 ? totalSales / purchaseCount : 0;
 
             totalRechargedEl.textContent = `₹${totalRecharged.toFixed(2)}`;
+            totalRefundedEl.textContent = `₹${totalRefunded.toFixed(2)}`; // NEW
             totalSalesEl.textContent = `₹${totalSales.toFixed(2)}`;
             outstandingBalanceEl.textContent = `₹${outstanding.toFixed(2)}`;
             totalTransactionsEl.textContent = totalTx;
@@ -1158,8 +1446,12 @@
             listEl.innerHTML = transactions.map(tx => { 
                 const time = tx.timestamp ? new Date(tx.timestamp.seconds * 1000).toLocaleTimeString() : '...';
                 const itemsStr = tx.items ? tx.items.map(i => `${i.name} (x${i.quantity})`).join(', ') : '';
+                
+                // MODIFIED to include refund
                 if (tx.type === 'purchase') return `<div class="bg-gray-700 p-3 rounded-lg"><p class="font-semibold">${tx.studentName} paid ${tx.stallName}</p><p class="text-sm">${itemsStr}</p><div class="flex justify-between items-center mt-1"><span class="text-red-400 font-bold">- ₹${tx.amount.toFixed(2)}</span><span class="text-xs text-gray-400">${time}</span></div></div>`;
-                else return `<div class="bg-gray-700 p-3 rounded-lg"><p class="font-semibold">${tx.studentName} recharged wallet</p><p class="text-sm text-gray-400">Processed by: ${tx.adminName ? 'Admin' : 'Self'}</p><div class="flex justify-between items-center mt-1"><span class="text-green-400 font-bold">+ ₹${tx.amount.toFixed(2)}</span><span class="text-xs text-gray-400">${time}</span></div></div>`;
+                else if (tx.type === 'recharge') return `<div class="bg-gray-700 p-3 rounded-lg"><p class="font-semibold">${tx.studentName} recharged wallet</p><p class="text-sm text-gray-400">Processed by: ${tx.adminName ? 'Admin' : 'Self'}</p><div class="flex justify-between items-center mt-1"><span class="text-green-400 font-bold">+ ₹${tx.amount.toFixed(2)}</span><span class="text-xs text-gray-400">${time}</span></div></div>`;
+                else if (tx.type === 'refund') return `<div class="bg-gray-700 p-3 rounded-lg"><p class="font-semibold">${tx.studentName} received a refund</p><p class="text-sm text-gray-400">Processed by: ${tx.adminName ? 'Admin' : 'Self'}</p><div class="flex justify-between items-center mt-1"><span class="text-green-400 font-bold">+ ₹${tx.amount.toFixed(2)}</span><span class="text-xs text-gray-400">${time}</span></div></div>`;
+                else return '';
              }).reverse().join('');
             appState.allTransactionsForExport = transactions;
         }
@@ -1195,6 +1487,21 @@
              else console.error("btnStudentPrintPass not found");
             if(btnDownload) btnDownload.onclick = () => downloadQR('studentPassQR', appState.currentUser?.name || 'student');
             else console.error("btnStudentDownloadQR not found");
+            
+            // NEW: Tab Listeners
+            const tabs = document.querySelectorAll('#studentDashboardView .student-tab');
+            const tabPanels = document.querySelectorAll('#studentDashboardView .student-tab-panel');
+            tabs.forEach(tab => {
+                tab.onclick = () => {
+                    tabs.forEach(t => { t.classList.replace('bg-blue-600', 'bg-gray-700'); t.classList.add('text-gray-300'); });
+                    tabPanels.forEach(p => p.classList.add('hidden'));
+                    tab.classList.replace('bg-gray-700', 'bg-blue-600');
+                    tab.classList.remove('text-gray-300');
+                    const targetPanel = document.getElementById(tab.dataset.target);
+                    if (targetPanel) targetPanel.classList.remove('hidden');
+                    else console.error("Target panel not found:", tab.dataset.target);
+                };
+            });
         }
 
 
@@ -1202,14 +1509,29 @@
             showView('studentDashboard');
             const user = appState.currentUser;
             if (!user) { logout(); return; }
+            
+            // Reset tabs to default
+            document.querySelectorAll('#studentDashboardView .student-tab').forEach((tab, index) => {
+                 const targetPanel = document.getElementById(tab.dataset.target);
+                 if (index === 0) { // First tab
+                     tab.classList.replace('bg-gray-700', 'bg-blue-600');
+                     tab.classList.remove('text-gray-300');
+                     if(targetPanel) targetPanel.classList.remove('hidden');
+                 } else {
+                     tab.classList.replace('bg-blue-600', 'bg-gray-700');
+                     tab.classList.add('text-gray-300');
+                     if(targetPanel) targetPanel.classList.add('hidden');
+                 }
+            });
+
 
             const updateText = (id, text) => { const el = document.getElementById(id); if (el) el.textContent = text; else console.error(`${id} not found`); };
-           
+            
             updateText('studentName', user.name);
             updateText('studentIdDisplay', `ID: ${user.id}`);
             updateText('studentPassName', user.name);
             updateText('studentPassClass', user.class || 'N/A');
-           
+            
             const qrContainer = document.getElementById('studentPassQR'); 
             if (qrContainer) {
                  qrContainer.innerHTML = '';
@@ -1225,6 +1547,10 @@
                 } else logout();
             }, error => { console.error("Error listening to balance:", error); logout(); }); 
             currentUnsubscribes.push(unsubBalance);
+
+            // Populate Event Info Tab
+            const eventInfoEl = document.getElementById('studentEventInfo');
+            if (eventInfoEl) eventInfoEl.innerHTML = formatEventInfo(appState.eventInfo);
 
             loadStudentStallList();
             loadStudentTransactionHistory();
@@ -1259,8 +1585,12 @@
                 listEl.innerHTML = snapshot.empty ? '<p class="text-gray-400">No history.</p>' : snapshot.docs.map(d => {
                     const tx = d.data(); const time = tx.timestamp ? new Date(tx.timestamp.seconds * 1000).toLocaleString() : '...';
                     const itemsStr = tx.items ? tx.items.map(i => `${i.name} (x${i.quantity})`).join(', ') : '';
+                    
+                    // MODIFIED to include refund
                     if (tx.type === 'purchase') return `<div class="bg-gray-700 p-3 rounded-lg"><p class="font-semibold">Paid ${tx.stallName}</p><p class="text-sm">${itemsStr}</p><div class="flex justify-between items-center mt-1"><span class="text-red-400 font-bold">- ₹${tx.amount.toFixed(2)}</span><span class="text-xs text-gray-400">${time}</span></div></div>`;
-                    else return `<div class="bg-gray-700 p-3 rounded-lg"><p class="font-semibold">Wallet Recharge</p><p class="text-sm text-gray-400">Processed by: ${tx.adminName?'Admin':'Self'}</p><div class="flex justify-between items-center mt-1"><span class="text-green-400 font-bold">+ ₹${tx.amount.toFixed(2)}</span><span class="text-xs text-gray-400">${time}</span></div></div>`;
+                    else if (tx.type === 'recharge') return `<div class="bg-gray-700 p-3 rounded-lg"><p class="font-semibold">Wallet Recharge</p><p class="text-sm text-gray-400">Processed by: ${tx.adminName?'Admin':'Self'}</p><div class="flex justify-between items-center mt-1"><span class="text-green-400 font-bold">+ ₹${tx.amount.toFixed(2)}</span><span class="text-xs text-gray-400">${time}</span></div></div>`;
+                    else if (tx.type === 'refund') return `<div class="bg-gray-700 p-3 rounded-lg"><p class="font-semibold">Wallet Refund</p><p class="text-sm text-gray-400">Processed by: ${tx.adminName?'Admin':'Self'}</p><div class="flex justify-between items-center mt-1"><span class="text-green-400 font-bold">+ ₹${tx.amount.toFixed(2)}</span><span class="text-xs text-gray-400">${time}</span></div></div>`;
+                    else return '';
                 }).reverse().join('');
             }, error => console.error("Error loading student history:", error)); currentUnsubscribes.push(unsub);
         }
@@ -1277,12 +1607,41 @@
             else console.error("btnStallBack not found");
             if(btnScan) btnScan.onclick = startStallPaymentScan;
              else console.error("btnStallScanToPay not found");
+             
+            // NEW: Tab Listeners
+            const tabs = document.querySelectorAll('#stallDashboardView .stall-tab');
+            const tabPanels = document.querySelectorAll('#stallDashboardView .stall-tab-panel');
+            tabs.forEach(tab => {
+                tab.onclick = () => {
+                    tabs.forEach(t => { t.classList.replace('bg-blue-600', 'bg-gray-700'); t.classList.add('text-gray-300'); });
+                    tabPanels.forEach(p => p.classList.add('hidden'));
+                    tab.classList.replace('bg-gray-700', 'bg-blue-600');
+                    tab.classList.remove('text-gray-300');
+                    const targetPanel = document.getElementById(tab.dataset.target);
+                    if (targetPanel) targetPanel.classList.remove('hidden');
+                    else console.error("Target panel not found:", tab.dataset.target);
+                };
+            });
         }
 
         function loadStallDashboard() {
             if (!appState.currentUser) { logout(); return; }
             showView('stallDashboard');
-           
+            
+            // Reset tabs to default
+            document.querySelectorAll('#stallDashboardView .stall-tab').forEach((tab, index) => {
+                 const targetPanel = document.getElementById(tab.dataset.target);
+                 if (index === 0) { // First tab
+                     tab.classList.replace('bg-gray-700', 'bg-blue-600');
+                     tab.classList.remove('text-gray-300');
+                     if(targetPanel) targetPanel.classList.remove('hidden');
+                 } else {
+                     tab.classList.replace('bg-blue-600', 'bg-gray-700');
+                     tab.classList.add('text-gray-300');
+                     if(targetPanel) targetPanel.classList.add('hidden');
+                 }
+            });
+            
             const stallNameEl = document.getElementById('stallName');
             if (stallNameEl) stallNameEl.textContent = appState.currentUser.name;
             else console.error("stallName element not found");
@@ -1312,6 +1671,11 @@
                 }).reverse().join('');
                 totalEl.textContent = `₹${totalSales.toFixed(2)}`;
             }, error => console.error("Error loading stall sales history:", error));
+            
+            // Populate Event Info Tab
+            const eventInfoEl = document.getElementById('stallEventInfo');
+            if (eventInfoEl) eventInfoEl.innerHTML = formatEventInfo(appState.eventInfo);
+
             currentUnsubscribes.push(unsubMenu, unsubHistory);
         }
 
@@ -1337,7 +1701,7 @@
             detailsEl.classList.add('hidden');
             scannerContainer.classList.remove('hidden');
             confirmBtn.classList.add('hidden');
-           
+            
             if (!stallQrScanner) {
                  try { stallQrScanner = new Html5Qrcode("stall-qr-reader"); } 
                  catch(e) { console.error("Failed to init stall scanner:", e); showAlert("Scanner failed"); loadStallDashboard(); return; }
@@ -1352,7 +1716,7 @@
                     scannerContainer.classList.add('hidden');
                     detailsEl.classList.remove('hidden');
                     confirmBtn.classList.remove('hidden');
-                   
+                    
                     const nameEl = document.getElementById('stallPaymentStudentName');
                     const balanceEl = document.getElementById('stallPaymentStudentBalance');
                     if(nameEl) nameEl.textContent = student.name;
@@ -1440,7 +1804,7 @@
              if (!appState.currentUser || !appState.scannedStudentId) {
                  showAlert("Error: Missing user or scanned student data.");
                  return;
-            }
+             }
             const menuMap = new Map((appState.currentUser.menu || []).map(i => [i.id, i]));
             let totalAmount = 0;
             const cartItemsForTx = []; 
@@ -1511,10 +1875,13 @@
         function attachAdminRechargeListeners() { 
             const btnCancel = document.getElementById('btnAdminRechargeCancel');
             const btnConfirm = document.getElementById('btnAdminConfirmRecharge');
+            const btnRefund = document.getElementById('btnAdminConfirmRefund'); // NEW
              if(btnCancel) btnCancel.onclick = () => loadAdminDashboard();
-             else console.error("btnAdminRechargeCancel not found");
-             if(btnConfirm) btnConfirm.onclick = processAdminRecharge;
+              else console.error("btnAdminRechargeCancel not found");
+             if(btnConfirm) btnConfirm.onclick = () => _processWalletUpdate('recharge'); // MODIFIED
              else console.error("btnAdminConfirmRecharge not found");
+             if(btnRefund) btnRefund.onclick = () => _processWalletUpdate('refund'); // NEW
+             else console.error("btnAdminConfirmRefund not found");
         }
 
         function startAdminRechargeScan() { 
@@ -1522,15 +1889,17 @@
             const detailsEl = document.getElementById('adminRechargeDetails');
             const scannerContainer = document.getElementById('admin-recharge-qr-reader-container');
             const confirmBtn = document.getElementById('btnAdminConfirmRecharge');
+            const refundBtn = document.getElementById('btnAdminConfirmRefund'); // NEW
             const amountInput = document.getElementById('adminRechargeAmount');
-             if (!detailsEl || !scannerContainer || !confirmBtn || !amountInput) { console.error("Missing elements for admin recharge scan"); return; }
+             if (!detailsEl || !scannerContainer || !confirmBtn || !amountInput || !refundBtn) { console.error("Missing elements for admin recharge scan"); return; } // MODIFIED
 
 
             detailsEl.classList.add('hidden');
             scannerContainer.classList.remove('hidden');
             confirmBtn.classList.add('hidden');
+            refundBtn.classList.add('hidden'); // NEW
             amountInput.value = '';
-           
+            
             if(!adminRechargeQrScanner) {
                  try { adminRechargeQrScanner = new Html5Qrcode("admin-recharge-qr-reader"); } 
                  catch(e) { console.error("Failed to init admin recharge scanner:", e); showAlert("Scanner failed"); loadAdminDashboard(); return; }
@@ -1544,6 +1913,7 @@
                     scannerContainer.classList.add('hidden');
                     detailsEl.classList.remove('hidden');
                     confirmBtn.classList.remove('hidden');
+                    refundBtn.classList.remove('hidden'); // NEW
 
                     const nameEl = document.getElementById('adminRechargeStudentName');
                     const balanceEl = document.getElementById('adminRechargeStudentBalance');
@@ -1555,8 +1925,9 @@
                 } catch(e) { showAlert(e.message); loadAdminDashboard(); } finally { hideLoading(); }
             }, (e)=>{/*console.warn(e)*/}).catch(err=>{showAlert("Camera error."); loadAdminDashboard();});
         }
-       
-        async function processAdminRecharge() { 
+        
+        // MODIFIED: Renamed from processAdminRecharge to handle both
+        async function _processWalletUpdate(type) { 
              const amountInput = document.getElementById('adminRechargeAmount');
              if (!amountInput) { console.error("adminRechargeAmount input not found"); return; }
             const amount = parseFloat(amountInput.value);
@@ -1567,13 +1938,150 @@
             try {
                 await runTransaction(db, async tx => {
                     const studentDoc = await tx.get(studentRef); if (!studentDoc.exists()) throw new Error("Student not found.");
-                    tx.update(studentRef, { balance: increment(amount) });
-                    tx.set(doc(transactionsRef()), { studentId, studentName:appState.scannedStudentName, amount, type:'recharge', adminName:appState.currentUser?.id || 'admin', timestamp:serverTimestamp() });
+                    tx.update(studentRef, { balance: increment(amount) }); // Both recharge and refund add money
+                    tx.set(doc(transactionsRef()), { 
+                        studentId, 
+                        studentName:appState.scannedStudentName, 
+                        amount, 
+                        type: type, // 'recharge' or 'refund'
+                        adminName:appState.currentUser?.id || 'admin', 
+                        timestamp:serverTimestamp() 
+                    });
                 });
-                showAlert('Recharge OK!'); loadAdminDashboard();
+                showAlert(`${type.charAt(0).toUpperCase() + type.slice(1)} OK!`); 
+                loadAdminDashboard();
             } catch (e) { showAlert(`Error: ${e.message}`); } finally { hideLoading(); }
         }
 
+        // --- NEW BULK IMPORT FUNCTIONS ---
+
+        async function createStudentInFirestore(name, className) {
+            if (!name || !className) {
+                console.warn("Skipping invalid student data:", { name, className });
+                throw new Error("Missing name or class");
+            }
+            
+            // Check if class exists, if not, add it.
+            const classesSnap = await getDoc(classesRef());
+            const classNames = (classesSnap.exists() && classesSnap.data().classNames) ? classesSnap.data().classNames : [];
+            if (!classNames.includes(className)) {
+                console.log(`Adding new class from bulk import: ${className}`);
+                await setDoc(classesRef(), { classNames: arrayUnion(className) }, { merge: true });
+            }
+
+            const newUser = {
+                name,
+                role: 'student',
+                balance: 0,
+                class: className,
+                createdAt: serverTimestamp()
+            };
+            const newDocRef = await addDoc(usersRef(), newUser);
+            await updateDoc(newDocRef, { userId: newDocRef.id });
+            return newDocRef.id;
+        }
+
+        async function processBulkImport(students) {
+            let success = 0;
+            let failed = 0;
+            const total = students.length;
+
+            for (let i = 0; i < total; i++) {
+                const student = students[i];
+                try {
+                    await createStudentInFirestore(student.name, student.class);
+                    success++;
+                } catch (error) {
+                    console.error("Failed to import student:", student.name, error);
+                    failed++;
+                }
+
+                // Update loading message every 10 students or on the last one
+                if ((i + 1) % 10 === 0 || (i + 1) === total) {
+                    showLoading(`Importing... ${i + 1} / ${total}`);
+                }
+            }
+            return { success, failed };
+        }
+
+        function parseCSV(csvText) {
+            const students = [];
+            if (!csvText) return students;
+
+            const lines = csvText.split('\n');
+            lines.forEach(line => {
+                const trimmedLine = line.trim();
+                if (trimmedLine) {
+                    // Find the last comma
+                    const lastCommaIndex = trimmedLine.lastIndexOf(',');
+                    if (lastCommaIndex > -1 && lastCommaIndex < trimmedLine.length -1) {
+                        const name = trimmedLine.substring(0, lastCommaIndex).trim();
+                        const className = trimmedLine.substring(lastCommaIndex + 1).trim();
+
+                        // Basic validation and skip header
+                        if (name && className && name.toLowerCase() !== "name" && className.toLowerCase() !== "class") {
+                            students.push({ name, class: className });
+                        }
+                    }
+                }
+            });
+            console.log(`Parsed ${students.length} students from CSV.`);
+            return students;
+        }
+
+        async function handleBulkImport() {
+            const fileInput = document.getElementById('adminStudentBulkUpload');
+            if (!fileInput.files || fileInput.files.length === 0) {
+                return showAlert("Please select a CSV file to upload.");
+            }
+            const file = fileInput.files[0];
+
+            if (file.type !== "text/csv" && !file.name.endsWith(".csv") && file.type !== "application/vnd.ms-excel") {
+                return showAlert("Invalid file type. Please upload a .csv file.");
+            }
+
+            showLoading("Reading CSV file...");
+
+            try {
+                const reader = new FileReader();
+                reader.onload = async (event) => {
+                    try {
+                        const csvText = event.target.result;
+                        const studentsToCreate = parseCSV(csvText);
+
+                        if (studentsToCreate.length === 0) {
+                            hideLoading();
+                            return showAlert("No valid student data found in the CSV. Make sure format is: Name,Class (no header row).");
+                        }
+
+                        showLoading(`Importing ${studentsToCreate.length} students...`);
+                        const results = await processBulkImport(studentsToCreate);
+
+                        hideLoading();
+                        showAlert(`Bulk import complete:\n- ${results.success} students imported successfully.\n- ${results.failed} students failed to import (see console for errors).`);
+                        
+                        fileInput.value = ''; // Clear the file input
+
+                    } catch (readError) {
+                        console.error("Error processing file content:", readError);
+                        hideLoading();
+                        showAlert(`Error processing file: ${readError.message}`);
+                    }
+                };
+                reader.onerror = () => {
+                    console.error("FileReader error:", reader.error);
+                    hideLoading();
+                    showAlert("Error reading the selected file.");
+                };
+                reader.readAsText(file);
+
+            } catch (error) {
+                console.error("Bulk Import Error:", error);
+                hideLoading();
+                showAlert(`An error occurred: ${error.message}`);
+            }
+        }
+        // --- END NEW BULK IMPORT FUNCTIONS ---
 
     </script>
 
@@ -1587,6 +2095,11 @@
             .print-this-one, .print-this-one * { color: #000 !important; background-color: white !important; }
             .print-hide { display: none !important; }
         }
+        /* Helper for formatting event info */
+        .event-info-content {
+            white-space: pre-wrap;
+            word-wrap: break-word;
+        }
     </style>
 </head>
 <body class="bg-gray-900 text-white font-sans antialiased">
@@ -1594,30 +2107,70 @@
     <!-- Main Container --><div class="container mx-auto p-4 max-w-lg min-h-screen pb-16">
 
         <!-- VIEW: Home --><div id="homeView" class="">
-             <header class="text-center my-12"> <h1 class="text-4xl font-bold text-blue-400 mb-2">Smart QR Event Wallet</h1> <p class="text-lg text-gray-300">Udaya Public School - Annual Fest 2025-26</p> </header>
+            <header class="text-center my-12"> <h1 class="text-4xl font-bold text-blue-400 mb-2">Smart QR Event Wallet</h1> <p class="text-lg text-gray-300">Udaya Public School - Annual Fest 2025-26</p> </header>
             <main class="space-y-6"> <button id="btnAdminLogin" class="w-full bg-red-600 hover:bg-red-700 text-white font-bold py-4 px-6 rounded-lg shadow-lg text-lg transition-all">Admin Login</button> <button id="btnStallLogin" class="w-full bg-green-600 hover:bg-green-700 text-white font-bold py-4 px-6 rounded-lg shadow-lg text-lg transition-all">Stall Login (Scan QR)</button> <button id="btnStudentLogin" class="w-full bg-blue-600 hover:bg-blue-700 text-white font-bold py-4 px-6 rounded-lg shadow-lg text-lg transition-all">Student Login (Scan QR)</button> </main>
         </div>
 
         <!-- VIEW: Admin Login --><div id="adminLoginView" class="hidden">
-             <header class="my-8"> <div class="flex items-center space-x-3 mb-4"> <div> <h2 class="text-lg font-semibold text-white">Udaya Public School</h2> <p class="text-sm text-gray-400">Annual Fest 2025-26</p> </div> </div> <button id="btnAdminLoginBack" class="text-blue-400 hover:text-blue-300">&larr; Back to Home</button> <h1 class="text-3xl font-bold text-center text-red-400 mt-4">Admin Login</h1> </header>
-            <main class="space-y-4 bg-gray-800 p-6 rounded-lg shadow-xl"> <div> <label for="adminPassword" class="block text-sm font-medium text-gray-300 mb-1">Password</label> <input type="password" id="adminPassword" class="w-full bg-gray-700 text-white border border-gray-600 rounded-lg p-3 focus:ring-red-500 focus:border-red-500" placeholder="••••••••"> </div> <button id="btnAdminLoginSubmit" class="w-full bg-red-600 hover:bg-red-700 text-white font-bold py-3 px-4 rounded-lg shadow-lg transition-all"> Login </button> <button id="btnAdminResetPassword" type="button" class="w-full text-center text-xs text-gray-400 hover:text-white mt-4"> Forgot Password? Reset to default </button> </main>
+            <header class="my-8"> <div class="flex items-center space-x-3 mb-4"> <div> <h2 class="text-lg font-semibold text-white">Udaya Public School</h2> <p class="text-sm text-gray-400">Annual Fest 2025-26</p> </div> </div> <button id="btnAdminLoginBack" class="text-blue-400 hover:text-blue-300">&larr; Back to Home</button> <h1 class="text-3xl font-bold text-center text-red-400 mt-4">Admin Login</h1> </header>
+            <main class="space-y-4 bg-gray-800 p-6 rounded-lg shadow-xl"> <div> <label for="adminPassword" class="block text-sm font-medium text-gray-300 mb-1">Password</label> <input type="password" id="adminPassword" class="w-full bg-gray-700 text-white border border-gray-600 rounded-lg p-3 focus:ring-red-500 focus:border-red-500" placeholder="••••••••"> </div> <button id="btnAdminLoginSubmit" class="w-full bg-red-600 hover:bg-red-700 text-white font-bold py-3 px-4 rounded-lg shadow-lg transition-all"> Login </button> 
+            <!-- REMOVED Reset Button -->
+            <!-- <button id="btnAdminResetPassword" type="button" class="w-full text-center text-xs text-gray-400 hover:text-white mt-4"> Forgot Password? Reset to default </button> -->
+            </main>
         </div>
 
         <!-- VIEW: Admin Dashboard --><div id="adminDashboardView" class="hidden">
             <header class="my-8 flex justify-between items-center"> <div class="flex items-center space-x-3"> <div> <h1 class="text-3xl font-bold text-red-400">Admin Dashboard</h1> <p class="text-sm text-gray-400">Udaya Public School</p> </div> </div> <button id="btnAdminLogout" class="bg-gray-700 hover:bg-gray-600 text-white font-medium py-2 px-4 rounded-lg text-sm transition-all self-start">Logout</button> </header>
-            <!-- Admin Tabs --><div class="mb-4 border-b border-gray-700"> <nav class="flex space-x-1" aria-label="Tabs"> <button data-target="panel-students" class="admin-tab bg-blue-600 text-white px-4 py-3 rounded-t-lg font-medium text-sm">Students</button> <button data-target="panel-stalls" class="admin-tab bg-gray-700 text-gray-300 px-4 py-3 rounded-t-lg font-medium text-sm">Stalls</button> <button data-target="panel-classes" class="admin-tab bg-gray-700 text-gray-300 px-4 py-3 rounded-t-lg font-medium text-sm">Classes</button> <button data-target="panel-reports" class="admin-tab bg-gray-700 text-gray-300 px-4 py-3 rounded-t-lg font-medium text-sm">Reports</button> </nav> </div>
+            <!-- Admin Tabs --><div class="mb-4 border-b border-gray-700"> <nav class="flex space-x-1" aria-label="Tabs"> <button data-target="panel-students" class="admin-tab bg-blue-600 text-white px-4 py-3 rounded-t-lg font-medium text-sm">Students</button> <button data-target="panel-stalls" class="admin-tab bg-gray-700 text-gray-300 px-4 py-3 rounded-t-lg font-medium text-sm">Stalls</button> <button data-target="panel-classes" class="admin-tab bg-gray-700 text-gray-300 px-4 py-3 rounded-t-lg font-medium text-sm">Classes</button> <button data-target="panel-reports" class="admin-tab bg-gray-700 text-gray-300 px-4 py-3 rounded-t-lg font-medium text-sm">Reports</button> <!-- NEW TAB --> <button data-target="panel-event" class="admin-tab bg-gray-700 text-gray-300 px-4 py-3 rounded-t-lg font-medium text-sm">Event</button> </nav> </div>
             <main class="space-y-6">
                 <!-- Panel 1: Manage Students -->
                 <div id="panel-students" class="admin-tab-panel space-y-6">
-                     <section class="bg-gray-800 p-6 rounded-lg shadow-xl"> <h2 class="text-2xl font-semibold mb-4 text-blue-300">Generate Student</h2> <div class="space-y-4"> <input type="text" id="adminStudentName" class="w-full bg-gray-700 text-white border border-gray-600 rounded-lg p-3" placeholder="Student Name"> <select id="adminStudentClassSelect" class="w-full bg-gray-700 text-white border border-gray-600 rounded-lg p-3"> <option value="">Select a Class</option> </select> <button id="btnAdminGenerateStudent" class="w-full bg-blue-600 hover:bg-blue-700 text-white font-bold py-3 px-4 rounded-lg shadow-lg transition-all"> Generate Student QR </button> <div id="adminStudentQRContainer" class="mt-4"> </div> <button id="btnAdminRechargeStudent" class="w-full bg-green-600 hover:bg-green-700 text-white font-bold py-3 px-4 rounded-lg shadow-lg transition-all mt-4"> Recharge Student (Scan QR) </button> </div> </section>
-                     <!-- MODIFIED: Added btnDownloadAllPasses -->
-                     <section class="bg-gray-800 p-6 rounded-lg shadow-xl"> <h2 class="text-2xl font-semibold mb-4 text-yellow-300">Find Student QR by Class</h2> <div class="space-y-4"> <div> <label class="block text-sm font-medium text-gray-300 mb-1">Select Class</label> <select id="adminSearchClassSelect" class="w-full bg-gray-700 text-white border border-gray-600 rounded-lg p-3"> <option value="">Select a Class</option> </select> </div> <div id="adminStudentListByClass" class="space-y-2 max-h-60 overflow-y-auto"> </div> <button id="btnDownloadAllPasses" class="w-full bg-purple-600 hover:bg-purple-700 text-white font-bold py-3 px-4 rounded-lg shadow-lg transition-all mt-4 hidden"> Download All Passes for this Class </button> <div id="adminSearchQRContainer" class="mt-4 hidden"> </div> </div> </section>
-                     <section class="bg-gray-800 p-6 rounded-lg shadow-xl"> <h2 class="text-2xl font-semibold mb-4">Current Students</h2> <div id="adminStudentList" class="space-y-2 max-h-60 overflow-y-auto"> </div> </section>
+                    <section class="bg-gray-800 p-6 rounded-lg shadow-xl"> <h2 class="text-2xl font-semibold mb-4 text-blue-300">Generate Student</h2> <div class="space-y-4"> <input type="text" id="adminStudentName" class="w-full bg-gray-700 text-white border border-gray-600 rounded-lg p-3" placeholder="Student Name"> <select id="adminStudentClassSelect" class="w-full bg-gray-700 text-white border border-gray-600 rounded-lg p-3"> <option value="">Select a Class</option> </select> <button id="btnAdminGenerateStudent" class="w-full bg-blue-600 hover:bg-blue-700 text-white font-bold py-3 px-4 rounded-lg shadow-lg transition-all"> Generate Student QR </button> <div id="adminStudentQRContainer" class="mt-4"> </div> <button id="btnAdminRechargeStudent" class="w-full bg-green-600 hover:bg-green-700 text-white font-bold py-3 px-4 rounded-lg shadow-lg transition-all mt-4"> Recharge / Refund Student (Scan QR) </button> </div> </section>
+                    
+                    <!-- NEW Bulk Import Section -->
+                    <section class="bg-gray-800 p-6 rounded-lg shadow-xl">
+                        <h2 class="text-2xl font-semibold mb-4 text-purple-300">Bulk Import Students</h2>
+                        <div class="space-y-4">
+                            <div>
+                                <label for="adminStudentBulkUpload" class="block text-sm font-medium text-gray-300 mb-1">Upload CSV File</label>
+                                <input type="file" id="adminStudentBulkUpload" accept=".csv,application/vnd.ms-excel" class="w-full text-sm text-gray-400
+                                    file:mr-4 file:py-2 file:px-4
+                                    file:rounded-lg file:border-0
+                                    file:text-sm file:font-semibold
+                                    file:bg-purple-600 file:text-white
+                                    hover:file:bg-purple-700
+                                    cursor-pointer">
+                                <p class="text-xs text-gray-400 mt-2">Required format: <code class="bg-gray-700 px-1 rounded">Name,Class</code> (one per line, no header row).</p>
+                                <p class="text-xs text-gray-400">Example: <code class="bg-gray-700 px-1 rounded">John Doe,10-A</code></p>
+                            </div>
+                            <button id="btnAdminBulkImport" class="w-full bg-purple-600 hover:bg-purple-700 text-white font-bold py-3 px-4 rounded-lg shadow-lg transition-all">
+                                Start Bulk Import
+                            </button>
+                        </div>
+                    </section>
+                    
+                    <!-- +++ NEW SECTION +++ -->
+                    <section class="bg-gray-800 p-6 rounded-lg shadow-xl">
+                        <h2 class="text-2xl font-semibold mb-4 text-yellow-300">Find Student by Name</h2>
+                        <div class="space-y-4">
+                            <input type="text" id="adminSearchStudentName" class="w-full bg-gray-700 text-white border border-gray-600 rounded-lg p-3" placeholder="Enter Full Student Name">
+                            <button id="btnAdminSearchStudent" class="w-full bg-yellow-600 hover:bg-yellow-700 text-white font-bold py-3 px-4 rounded-lg shadow-lg transition-all">
+                                Search Student
+                            </button>
+                            <div id="adminSearchStudentQRContainer" class="mt-4 hidden">
+                                <!-- QR will be rendered here by displayUserQR -->
+                            </div>
+                        </div>
+                    </section>
+                    
+                    <!-- MODIFIED: Added btnDownloadAllPasses -->
+                    <section class="bg-gray-800 p-6 rounded-lg shadow-xl"> <h2 class="text-2xl font-semibold mb-4 text-yellow-300">Find Student QR by Class</h2> <div class="space-y-4"> <div> <label class="block text-sm font-medium text-gray-300 mb-1">Select Class</label> <select id="adminSearchClassSelect" class="w-full bg-gray-700 text-white border border-gray-600 rounded-lg p-3"> <option value="">Select a Class</option> </select> </div> <div id="adminStudentListByClass" class="space-y-2 max-h-60 overflow-y-auto"> </div> <button id="btnDownloadAllPasses" class="w-full bg-purple-600 hover:bg-purple-700 text-white font-bold py-3 px-4 rounded-lg shadow-lg transition-all mt-4 hidden"> Download All Passes for this Class </button> <div id="adminSearchQRContainer" class="mt-4 hidden"> </div> </div> </section>
+                    <section class="bg-gray-800 p-6 rounded-lg shadow-xl"> <h2 class="text-2xl font-semibold mb-4">Current Students</h2> <div id="adminStudentList" class="space-y-2 max-h-60 overflow-y-auto"> </div> </section>
                 </div>
 
                 <!-- Panel 2: Manage Stalls -->
                 <div id="panel-stalls" class="admin-tab-panel hidden space-y-6">
-                    <section class="bg-gray-800 p-6 rounded-lg shadow-xl"> <h2 class="text-2xl font-semibold mb-4 text-green-300">Generate Stall</h2> <div class="space-y-4"> <input type="text" id="adminStallName" class="w-full bg-gray-700 text-white border border-gray-600 rounded-lg p-3" placeholder="Stall Name (e.g., Pizza Corner)"> <button id="btnAdminGenerateStall" class="w-full bg-green-600 hover:bg-green-700 text-white font-bold py-3 px-4 rounded-lg shadow-lg transition-all"> Generate Stall QR </button> <div id="adminStallQRContainer" class="bg-white p-4 rounded-lg text-black text-center mt-4"> </div> </div> </section>
+                    <section class="bg-gray-800 p-6 rounded-lg shadow-xl"> <h2 class="text-2xl font-semibold mb-4 text-green-300">Generate Stall</h2> <div class="space-y-4"> <input type="text" id="adminStallName" class="w-full bg-gray-700 text-white border border-gray-600 rounded-lg p-3" placeholder="Stall Name (e.g., Pizza Corner)"> <button id="btnAdminGenerateStall" class="w-full bg-green-600 hover:bg-green-700 text-white font-bold py-3 px-4 rounded-lg shadow-lg transition-all"> Generate Stall QR </button> <div id="adminStallQRContainer" class="bg-white p-4 rounded-lg text-black text-center mt-4 hidden"> </div> </div> </section>
                     <section class="bg-gray-800 p-6 rounded-lg shadow-xl"> <h2 class="text-2xl font-semibold mb-4 text-yellow-300">Find Stall QR</h2> <div class="space-y-4"> <input type="text" id="adminSearchStallName" class="w-full bg-gray-700 text-white border border-gray-600 rounded-lg p-3" placeholder="Enter Full Stall Name"> <button id="btnAdminSearchStall" class="w-full bg-yellow-600 hover:bg-yellow-700 text-white font-bold py-3 px-4 rounded-lg shadow-lg transition-all"> Search </button> <div id="adminSearchStallQRContainer" class="bg-white p-4 rounded-lg text-black text-center mt-4 hidden"> </div> </div> </section>
                     <section class="bg-gray-800 p-6 rounded-lg shadow-xl">
                         <h2 class="text-2xl font-semibold mb-4 text-green-300">Add Menu Item</h2>
@@ -1637,16 +2190,30 @@
 
                 <!-- Panel 3: Manage Classes -->
                 <div id="panel-classes" class="admin-tab-panel hidden space-y-6">
-                     <section class="bg-gray-800 p-6 rounded-lg shadow-xl"> <h2 class="text-2xl font-semibold mb-4 text-purple-300">Add New Class</h2> <div class="space-y-4"> <input type="text" id="adminClassName" class="w-full bg-gray-700 text-white border border-gray-600 rounded-lg p-3" placeholder="Class Name (e.g., 10-A, 12-C)"> <button id="btnAdminAddClass" class="w-full bg-purple-600 hover:bg-purple-700 text-white font-bold py-3 px-4 rounded-lg shadow-lg transition-all"> Add Class </button> </div> </section>
-                     <section> <h2 class="text-2xl font-semibold mb-4">Current Classes</h2> <div id="adminClassList" class="space-y-3"> </div> </section>
+                    <section class="bg-gray-800 p-6 rounded-lg shadow-xl"> <h2 class="text-2xl font-semibold mb-4 text-purple-300">Add New Class</h2> <div class="space-y-4"> <input type="text" id="adminClassName" class="w-full bg-gray-700 text-white border border-gray-600 rounded-lg p-3" placeholder="Class Name (e.g., 10-A, 12-C)"> <button id="btnAdminAddClass" class="w-full bg-purple-600 hover:bg-purple-700 text-white font-bold py-3 px-4 rounded-lg shadow-lg transition-all"> Add Class </button> </div> </section>
+                    <section> <h2 class="text-2xl font-semibold mb-4">Current Classes</h2> <div id="adminClassList" class="space-y-3"> </div> </section>
                 </div>
 
                 <!-- Panel 4: Reports -->
                 <div id="panel-reports" class="admin-tab-panel hidden space-y-6">
-                     <section class="bg-gray-800 p-6 rounded-lg shadow-xl space-y-4"> <h2 class="text-2xl font-semibold mb-4 text-yellow-300">Event Financials</h2> <div class="flex justify-between bg-gray-700 p-4 rounded-lg"> <span>Total Recharged:</span> <span id="adminTotalRecharged" class="text-lg font-bold text-green-400">₹0.00</span> </div> <div class="flex justify-between bg-gray-700 p-4 rounded-lg"> <span>Total Sales:</span> <span id="adminTotalSales" class="text-lg font-bold text-red-400">₹0.00</span> </div> <div class="flex justify-between bg-gray-700 p-4 rounded-lg"> <span>Outstanding Balance:</span> <span id="adminOutstandingBalance" class="text-lg font-bold text-blue-400">₹0.00</span> </div> <div class="grid grid-cols-2 gap-4"> <div class="bg-gray-700 p-4 rounded-lg text-center"> <span class="text-sm text-gray-400">Total Transactions</span> <span id="adminTotalTransactions" class="text-2xl font-bold block">0</span> </div> <div class="bg-gray-700 p-4 rounded-lg text-center"> <span class="text-sm text-gray-400">Avg. Purchase</span> <span id="adminAvgPurchaseValue" class="text-2xl font-bold block">₹0.00</span> </div> </div> </section>
-                     <section class="bg-gray-800 p-6 rounded-lg shadow-xl"> <h3 class="text-xl font-semibold mb-2">Sales per Stall</h3> <div id="adminStallSalesSummary" class="space-y-2 max-h-60 overflow-y-auto"> </div> </section>
-                     <section class="bg-gray-800 p-6 rounded-lg shadow-xl"> <h3 class="text-xl font-semibold mb-2">Top-Selling Items</h3> <div id="adminTopItemsList" class="space-y-2 max-h-60 overflow-y-auto"> </div> </section> <section class="bg-gray-800 p-6 rounded-lg shadow-xl"> <h3 class="text-xl font-semibold mb-2">Total Spending by Class</h3> <div id="adminClassSpendingSummary" class="space-y-2 max-h-60 overflow-y-auto"> </div> </section>
-                     <section> <h2 class="text-2xl font-semibold mb-4">All Transactions</h2> <div id="adminTransactionList" class="space-y-3 max-h-96 overflow-y-auto"> </div> <button id="btnExportCSV" class="w-full bg-blue-600 hover:bg-blue-700 text-white font-bold py-3 px-4 rounded-lg shadow-lg transition-all mt-4"> Export All Transactions to CSV </button> </section>
+                    <section class="bg-gray-800 p-6 rounded-lg shadow-xl space-y-4"> <h2 class="text-2xl font-semibold mb-4 text-yellow-300">Event Financials</h2> <div class="flex justify-between bg-gray-700 p-4 rounded-lg"> <span>Total Recharged:</span> <span id="adminTotalRecharged" class="text-lg font-bold text-green-400">₹0.00</span> </div> <div class="flex justify-between bg-gray-700 p-4 rounded-lg"> <span>Total Sales:</span> <span id="adminTotalSales" class="text-lg font-bold text-red-400">₹0.00</span> </div> <!-- NEW Refund Stat --> <div class="flex justify-between bg-gray-700 p-4 rounded-lg"> <span>Total Refunded:</span> <span id="adminTotalRefunded" class="text-lg font-bold text-yellow-400">₹0.00</span> </div> <div class="flex justify-between bg-gray-700 p-4 rounded-lg"> <span>Outstanding Balance:</span> <span id="adminOutstandingBalance" class="text-lg font-bold text-blue-400">₹0.00</span> </div> <div class="grid grid-cols-2 gap-4"> <div class="bg-gray-700 p-4 rounded-lg text-center"> <span class="text-sm text-gray-400">Total Transactions</span> <span id="adminTotalTransactions" class="text-2xl font-bold block">0</span> </div> <div class="bg-gray-700 p-4 rounded-lg text-center"> <span class="text-sm text-gray-400">Avg. Purchase</span> <span id="adminAvgPurchaseValue" class="text-2xl font-bold block">₹0.00</span> </div> </div> </section>
+                    <section class="bg-gray-800 p-6 rounded-lg shadow-xl"> <h3 class="text-xl font-semibold mb-2">Sales per Stall</h3> <div id="adminStallSalesSummary" class="space-y-2 max-h-60 overflow-y-auto"> </div> </section>
+                    <section class="bg-gray-800 p-6 rounded-lg shadow-xl"> <h3 class="text-xl font-semibold mb-2">Top-Selling Items</h3> <div id="adminTopItemsList" class="space-y-2 max-h-60 overflow-y-auto"> </div> </section> <section class="bg-gray-800 p-6 rounded-lg shadow-xl"> <h3 class="text-xl font-semibold mb-2">Total Spending by Class</h3> <div id="adminClassSpendingSummary" class="space-y-2 max-h-60 overflow-y-auto"> </div> </section>
+                    <section> <h2 class="text-2xl font-semibold mb-4">All Transactions</h2> <div id="adminTransactionList" class="space-y-3 max-h-96 overflow-y-auto"> </div> <button id="btnExportCSV" class="w-full bg-blue-600 hover:bg-blue-700 text-white font-bold py-3 px-4 rounded-lg shadow-lg transition-all mt-4"> Export All Transactions to CSV </button> </section>
+                </div>
+                
+                <!-- NEW Panel 5: Manage Event Info -->
+                <div id="panel-event" class="admin-tab-panel hidden space-y-6">
+                    <section class="bg-gray-800 p-6 rounded-lg shadow-xl">
+                        <h2 class="text-2xl font-semibold mb-4 text-indigo-300">Edit Event Info</h2>
+                        <div class="space-y-4">
+                            <p class="text-sm text-gray-400">This content will be displayed on the "Event" tab for all students and stalls. You can include schedules, announcements, rules, etc. (Line breaks will be preserved).</p>
+                            <textarea id="adminEventInfoTextarea" rows="10" class="w-full bg-gray-700 text-white border border-gray-600 rounded-lg p-3" placeholder="Enter event info here..."></textarea>
+                            <button id="btnAdminSaveEventInfo" class="w-full bg-indigo-600 hover:bg-indigo-700 text-white font-bold py-3 px-4 rounded-lg shadow-lg transition-all">
+                                Save Event Info
+                            </button>
+                        </div>
+                    </section>
                 </div>
             </main>
         </div>
@@ -1658,41 +2225,94 @@
 
         <!-- VIEW: Student Dashboard --><div id="studentDashboardView" class="hidden">
             <header class="my-8"> <button id="btnStudentBack" class="text-blue-400 hover:text-blue-300 mb-4">&larr; Back to Home (Logout)</button> <div class="flex justify-between items-start"> <div class="flex items-center space-x-3"> <div> <h1 class="text-3xl font-bold text-blue-400">Welcome, <span id="studentName"></span></h1> <p class="text-sm text-gray-400">Udaya Public School</p> </div> </div> <button id="btnStudentLogout" class="bg-gray-700 hover:bg-gray-600 text-white font-medium py-2 px-4 rounded-lg text-sm transition-all self-start flex-shrink-0">Logout</button> </div> <div class="mt-4"> <p id="studentIdDisplay" class="text-sm text-gray-400"></p> <p class="text-lg text-gray-300 mt-4">Your Balance:</p> <p id="studentBalance" class="text-5xl font-extrabold text-green-400">₹0.00</p> </div> </header>
+            
+            <!-- NEW: Student Tabs -->
+            <div class="mb-4 border-b border-gray-700">
+                <nav class="flex space-x-1" aria-label="Tabs">
+                    <button data-target="student-panel-wallet" class="student-tab bg-blue-600 text-white px-4 py-3 rounded-t-lg font-medium text-sm">Wallet & Pass</button>
+                    <button data-target="student-panel-stalls" class="student-tab bg-gray-700 text-gray-300 px-4 py-3 rounded-t-lg font-medium text-sm">Stalls</button>
+                    <button data-target="student-panel-event" class="student-tab bg-gray-700 text-gray-300 px-4 py-3 rounded-t-lg font-medium text-sm">Event Info</button>
+                </nav>
+            </div>
+
             <main class="space-y-8">
-               
-                <!-- Entry Pass Section -->
-                <section class="bg-gray-800 p-6 rounded-lg shadow-xl space-y-4">
-                    <h2 class="text-2xl font-semibold mb-4 text-blue-300">My Entry Pass</h2>
-                    <div id="student-printable-pass" class="printable-area bg-white text-black p-6 rounded-lg shadow-lg max-w-xs mx-auto border-4 border-blue-600"> 
-                        <div class="text-center border-b pb-4 border-gray-300"> <h3 class="text-xl font-bold text-gray-800">Udaya Public School</h3> <p class="text-xs text-gray-600">Mahadev Jharkhandi, Kunraghat, Gorakhpur</p> </div> 
-                        <div class="my-4 text-center"> <p class="text-sm font-medium text-gray-700">ANNUAL FEST 2025-26</p> <p class="text-2xl font-bold text-blue-600">ENTRY PASS</p> <p class="text-sm font-semibold text-gray-700">Date: 1-FEB-2026</p> </div> 
-                        <div class="my-4 text-center"> <p id="studentPassName" class="text-lg font-bold text-black">[Student Name]</p> <p class="text-base text-gray-700">Class: <span id="studentPassClass">[Class]</span></p> </div> 
-                        <div id="studentPassQR" class="flex justify-center p-4 bg-white rounded-lg"> </div> 
-                    </div>
-                    <div class="flex space-x-2 mt-4 max-w-xs mx-auto print-hide">
-                        <button id="btnStudentPrintPass" class="w-full bg-blue-600 hover:bg-blue-700 text-white font-bold py-2 px-4 rounded-lg">Print Pass</button>
-                        <button id="btnStudentDownloadQR" class="w-full bg-gray-600 hover:bg-gray-700 text-white font-bold py-2 px-4 rounded-lg">Download QR</button>
-                    </div>
-                </section>
-                <!-- Stalls & Prices -->
-                <section>
-                    <h2 class="text-2xl font-semibold mb-4">Stalls & Prices</h2>
-                    <div id="studentStallList" class="space-y-4"> </div>
-                </section>
-                <!-- Transaction History -->
-                <section>
-                    <h2 class="text-2xl font-semibold mb-4">Transaction History</h2>
-                    <div id="studentTransactionList" class="space-y-3 max-h-96 overflow-y-auto"> </div>
-                </section>
+                
+                <!-- Student Panel 1: Wallet, Pass, History -->
+                <div id="student-panel-wallet" class="student-tab-panel space-y-8">
+                    <!-- Entry Pass Section -->
+                    <section class="bg-gray-800 p-6 rounded-lg shadow-xl space-y-4">
+                        <h2 class="text-2xl font-semibold mb-4 text-blue-300">My Entry Pass</h2>
+                        <div id="student-printable-pass" class="printable-area bg-white text-black p-6 rounded-lg shadow-lg max-w-xs mx-auto border-4 border-blue-600"> 
+                            <div class="text-center border-b pb-4 border-gray-300"> <h3 class="text-xl font-bold text-gray-800">Udaya Public School</h3> <p class="text-xs text-gray-600">Mahadev Jharkhandi, Kunraghat, Gorakhpur</p> </div> 
+                            <div class="my-4 text-center"> <p class="text-sm font-medium text-gray-700">ANNUAL FEST 2025-26</p> <p class="text-2xl font-bold text-blue-600">ENTRY PASS</p> <p class="text-sm font-semibold text-gray-700">Date: 1-FEB-2026</p> </div> 
+                            <div class="my-4 text-center"> <p id="studentPassName" class="text-lg font-bold text-black">[Student Name]</p> <p class="text-base text-gray-700">Class: <span id="studentPassClass">[Class]</span></p> </div> 
+                            <div id="studentPassQR" class="flex justify-center p-4 bg-white rounded-lg"> </div> 
+                        </div>
+                        <div class="flex space-x-2 mt-4 max-w-xs mx-auto print-hide">
+                            <button id="btnStudentPrintPass" class="w-full bg-blue-600 hover:bg-blue-700 text-white font-bold py-2 px-4 rounded-lg">Print Pass</button>
+                            <button id="btnStudentDownloadQR" class="w-full bg-gray-600 hover:bg-gray-700 text-white font-bold py-2 px-4 rounded-lg">Download QR</button>
+                        </div>
+                    </section>
+                    <!-- Transaction History -->
+                    <section>
+                        <h2 class="text-2xl font-semibold mb-4">Transaction History</h2>
+                        <div id="studentTransactionList" class="space-y-3 max-h-96 overflow-y-auto"> </div>
+                    </section>
+                </div>
+                
+                <!-- Student Panel 2: Stalls & Prices -->
+                <div id="student-panel-stalls" class="student-tab-panel hidden space-y-8">
+                    <section>
+                        <h2 class="text-2xl font-semibold mb-4">Stalls & Prices</h2>
+                        <div id="studentStallList" class="space-y-4"> </div>
+                    </section>
+                </div>
+
+                <!-- NEW Student Panel 3: Event Info -->
+                <div id="student-panel-event" class="student-tab-panel hidden space-y-8">
+                     <section class="bg-gray-800 p-6 rounded-lg shadow-xl">
+                        <h2 class="text-2xl font-semibold mb-4 text-indigo-300">Event Information</h2>
+                        <div id="studentEventInfo" class="text-gray-200 leading-relaxed event-info-content">
+                            <!-- Content injected by JS -->
+                        </div>
+                    </section>
+                </div>
             </main>
         </div>
 
         <!-- VIEW: Stall Dashboard --><div id="stallDashboardView" class="hidden">
             <header class="my-8"> <button id="btnStallBack" class="text-blue-400 hover:text-blue-300 mb-4">&larr; Back to Home (Logout)</button> <div class="flex justify-between items-start"> <div class="flex items-center space-x-3"> <div> <h1 class="text-3xl font-bold text-green-400"><span id="stallName"></span></h1> <p class="text-sm text-gray-400">Udaya Public School</p> </div> </div> <button id="btnStallLogout" class="bg-gray-700 hover:bg-gray-600 text-white font-medium py-2 px-4 rounded-lg text-sm transition-all self-start flex-shrink-0">Logout</button> </div> <div class="mt-4"> <p class="text-lg text-gray-300">Total Sales:</p> <p id="stallTotalSales" class="text-5xl font-extrabold text-white">₹0.00</p> </div> </header>
+            
+            <!-- NEW: Stall Tabs -->
+            <div class="mb-4 border-b border-gray-700">
+                <nav class="flex space-x-1" aria-label="Tabs">
+                    <button data-target="stall-panel-sales" class="stall-tab bg-blue-600 text-white px-4 py-3 rounded-t-lg font-medium text-sm">Sales</button>
+                    <button data-target="stall-panel-menu" class="stall-tab bg-gray-700 text-gray-300 px-4 py-3 rounded-t-lg font-medium text-sm">My Menu</button>
+                    <button data-target="stall-panel-event" class="stall-tab bg-gray-700 text-gray-300 px-4 py-3 rounded-t-lg font-medium text-sm">Event Info</button>
+                </nav>
+            </div>
+            
             <main class="space-y-8">
-                <section><button id="btnStallScanToPay" class="w-full bg-blue-600 hover:bg-blue-700 text-white font-bold py-6 px-6 rounded-lg shadow-lg text-2xl transition-all">Scan Student QR to Pay</button></section>
-                <section class="bg-gray-800 p-6 rounded-lg shadow-xl"> <h2 class="text-2xl font-semibold mb-4">My Menu</h2> <div id="stallMenuList" class="space-y-2"> </div> </section>
-                <section> <h2 class="text-2xl font-semibold mb-4">Sales History</h2> <div id="stallSaleList" class="space-y-3 max-h-96 overflow-y-auto"> </div> </section>
+                <!-- Stall Panel 1: Sales -->
+                <div id="stall-panel-sales" class="stall-tab-panel space-y-8">
+                    <section><button id="btnStallScanToPay" class="w-full bg-blue-600 hover:bg-blue-700 text-white font-bold py-6 px-6 rounded-lg shadow-lg text-2xl transition-all">Scan Student QR to Pay</button></section>
+                    <section> <h2 class="text-2xl font-semibold mb-4">Sales History</h2> <div id="stallSaleList" class="space-y-3 max-h-96 overflow-y-auto"> </div> </section>
+                </div>
+                
+                <!-- Stall Panel 2: Menu -->
+                <div id="stall-panel-menu" class="stall-tab-panel hidden space-y-8">
+                    <section class="bg-gray-800 p-6 rounded-lg shadow-xl"> <h2 class="text-2xl font-semibold mb-4">My Menu</h2> <div id="stallMenuList" class="space-y-2"> </div> </section>
+                </div>
+                
+                <!-- NEW Stall Panel 3: Event Info -->
+                <div id="stall-panel-event" class="stall-tab-panel hidden space-y-8">
+                     <section class="bg-gray-800 p-6 rounded-lg shadow-xl">
+                        <h2 class="text-2xl font-semibold mb-4 text-indigo-300">Event Information</h2>
+                        <div id="stallEventInfo" class="text-gray-200 leading-relaxed event-info-content">
+                            <!-- Content injected by JS -->
+                        </div>
+                    </section>
+                </div>
             </main>
         </div>
 
@@ -1711,13 +2331,22 @@
         </div>
 
         <!-- VIEW: Admin Recharge --><div id="adminRechargeView" class="hidden">
-             <header class="my-8"> <div class="flex items-center space-x-3 mb-4"> <div> <h2 class="text-lg font-semibold text-white">Udaya Public School</h2> <p class="text-sm text-gray-400">Annual Fest 2025-26</p> </div> </div> <h1 class="text-3xl font-bold text-center text-green-400">Recharge Student Wallet</h1> </header>
-             <main class="space-y-6"> <div id="admin-recharge-qr-reader-container"> <p class="text-center text-lg text-yellow-300 mb-4">Scanning for Student QR...</p> <div id="admin-recharge-qr-reader" class="w-full rounded-lg overflow-hidden border-4 border-gray-700"></div> </div> <div id="adminRechargeDetails" class="hidden space-y-6"> <section class="bg-gray-800 p-6 rounded-lg shadow-xl"> <h2 class="text-2xl font-semibold mb-2">Student Details</h2> <div class="flex justify-between items-center"> <span id="adminRechargeStudentName" class="text-xl"></span> <span id="adminRechargeStudentBalance" class="text-xl font-bold text-green-400"></span> </div> </section> <section class="bg-gray-800 p-6 rounded-lg shadow-xl"> <h2 class="text-2xl font-semibold mb-4">Enter Amount</h2> <input type="number" id="adminRechargeAmount" class="w-full bg-gray-700 text-white border border-gray-600 rounded-lg p-3 text-2xl" placeholder="e.g., 500"> </section> </div> <button id="btnAdminConfirmRecharge" class="hidden w-full bg-green-600 hover:bg-green-700 text-white font-bold py-4 px-6 rounded-lg shadow-lg text-lg transition-all"> Confirm Recharge </button> <button id="btnAdminRechargeCancel" class="w-full bg-gray-700 hover:bg-gray-600 text-white font-bold py-3 px-4 rounded-lg shadow-lg transition-all"> Cancel </button> </main>
+             <!-- MODIFIED Title -->
+             <header class="my-8"> <div class="flex items-center space-x-3 mb-4"> <div> <h2 class="text-lg font-semibold text-white">Udaya Public School</h2> <p class="text-sm text-gray-400">Annual Fest 2025-26</p> </div> </div> <h1 class="text-3xl font-bold text-center text-green-400">Recharge / Refund Wallet</h1> </header>
+             <main class="space-y-6"> <div id="admin-recharge-qr-reader-container"> <p class="text-center text-lg text-yellow-300 mb-4">Scanning for Student QR...</p> <div id="admin-recharge-qr-reader" class="w-full rounded-lg overflow-hidden border-4 border-gray-700"></div> </div> <div id="adminRechargeDetails" class="hidden space-y-6"> <section class="bg-gray-800 p-6 rounded-lg shadow-xl"> <h2 class="text-2xl font-semibold mb-2">Student Details</h2> <div class="flex justify-between items-center"> <span id="adminRechargeStudentName" class="text-xl"></span> <span id="adminRechargeStudentBalance" class="text-xl font-bold text-green-400"></span> </div> </section> <section class="bg-gray-800 p-6 rounded-lg shadow-xl"> <h2 class="text-2xl font-semibold mb-4">Enter Amount</h2> <input type="number" id="adminRechargeAmount" class="w-full bg-gray-700 text-white border border-gray-600 rounded-lg p-3 text-2xl" placeholder="e.g., 500"> </section> </div> 
+             <!-- MODIFIED Button Layout -->
+             <div class="space-y-4">
+                <button id="btnAdminConfirmRecharge" class="hidden w-full bg-green-600 hover:bg-green-700 text-white font-bold py-4 px-6 rounded-lg shadow-lg text-lg transition-all"> Confirm Recharge </button> 
+                <button id="btnAdminConfirmRefund" class="hidden w-full bg-red-600 hover:bg-red-700 text-white font-bold py-4 px-6 rounded-lg shadow-lg text-lg transition-all"> Process Refund </button> 
+                <button id="btnAdminRechargeCancel" class="w-full bg-gray-700 hover:bg-gray-600 text-white font-bold py-3 px-4 rounded-lg shadow-lg transition-all"> Cancel </button> 
+             </div>
+            </main>
         </div>
 
         <!-- VIEW: Loading Overlay --><div id="loadingView" class="hidden fixed inset-0 bg-black bg-opacity-75 flex flex-col items-center justify-center z-50"> <div class="spinner w-16 h-16 border-4 border-gray-600 rounded-full"></div> <p id="loadingMessage" class="text-white text-xl mt-4">Loading...</p> </div>
         <!-- Modal (Alert) --><div id="modal" class="hidden fixed inset-0 bg-black bg-opacity-75 flex items-center justify-center z-50 p-4"> <div class="bg-white text-black p-6 rounded-lg shadow-xl max-w-sm w-full"> <p id="modalMessage" class="text-lg mb-4">This is an alert message.</p> <button id="modalButton" class="w-full bg-blue-600 hover:bg-blue-700 text-white font-bold py-2 px-4 rounded-lg"> OK </button> </div> </div>
         <!-- Modal (Confirm) --><div id="confirmModal" class="hidden fixed inset-0 bg-black bg-opacity-75 flex items-center justify-center z-50 p-4"> <div class="bg-white text-black p-6 rounded-lg shadow-xl max-w-sm w-full"> <p id="confirmModalMessage" class="text-lg mb-6">Are you sure?</p> <div class="flex space-x-4"> <button id="btnConfirmNo" class="w-full bg-gray-600 hover:bg-gray-700 text-white font-bold py-2 px-4 rounded-lg"> Cancel </button> <button id="btnConfirmYes" class="w-full bg-red-600 hover:bg-red-700 text-white font-bold py-2 px-4 rounded-lg"> Yes </button> </div> </div> </div>
+        <!-- NEW: Modal (Edit Item) --><div id="editItemModal" class="hidden fixed inset-0 bg-black bg-opacity-75 flex items-center justify-center z-50 p-4"> <div class="bg-white text-black p-6 rounded-lg shadow-xl max-w-sm w-full"> <h3 class="text-xl font-semibold mb-4">Edit Menu Item</h3> <div class="space-y-4"> <div> <label for="editItemNameInput" class="block text-sm font-medium text-gray-700 mb-1">Item Name</label> <input type="text" id="editItemNameInput" class="w-full bg-gray-100 text-black border border-gray-300 rounded-lg p-3"> </div> <div> <label for="editItemPriceInput" class="block text-sm font-medium text-gray-700 mb-1">Item Price</label> <input type="number" id="editItemPriceInput" class="w-full bg-gray-100 text-black border border-gray-300 rounded-lg p-3"> </div> <!-- Hidden fields to store context --> <input type="hidden" id="editItemId"> <input type="hidden" id="editItemStallId"> </div> <div class="flex space-x-4 mt-6"> <button id="btnCancelItemEdit" class="w-full bg-gray-600 hover:bg-gray-700 text-white font-bold py-2 px-4 rounded-lg"> Cancel </button> <button id="btnSaveItemChanges" class="w-full bg-blue-600 hover:bg-blue-700 text-white font-bold py-2 px-4 rounded-lg"> Save Changes </button> </div> </div> </div>
 
         <!-- Global Footer --><footer class="text-center w-full mt-12 mb-4 text-gray-500 text-xs"> <p class="font-semibold">Udaya Public School</p> <p>Mahadev Jharkhandi, Kunraghat, Gorakhpur</p> </footer>
     </div> <!-- End Main Container -->
