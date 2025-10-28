@@ -1517,7 +1517,7 @@
             const listEl = document.getElementById('adminTransactionList');
             const totalSalesEl = document.getElementById('adminTotalSales');
             const totalRechargedEl = document.getElementById('adminTotalRecharged');
-            const totalRefundedEl = document.getElementById('adminTotalRefunded'); // NEW
+            const totalRefundedEl = document.getElementById('adminTotalRefunded'); // This will now track 'cash_out' deductions
             const outstandingBalanceEl = document.getElementById('adminOutstandingBalance');
             const totalTransactionsEl = document.getElementById('adminTotalTransactions');
             const avgPurchaseValueEl = document.getElementById('adminAvgPurchaseValue');
@@ -1556,11 +1556,12 @@
                     classSpending[studentClass] = (classSpending[studentClass] || 0) + tx.amount;
                 } else if (tx.type === 'recharge') { 
                     totalRecharged += tx.amount; 
-                } else if (tx.type === 'refund') { // NEW
+                } else if (tx.type === 'cash_out') { // MODIFIED: Tracking cash-out deductions here
                     totalRefunded += tx.amount;
                 }
             });
 
+            // Outstanding balance is Total Recharge - Total Spent (Sales) - Total Refunded (Cash Out)
             const outstanding = totalRecharged - totalSales - totalRefunded; // MODIFIED
             const totalTx = transactions.length; // MODIFIED
             const avgPurchase = purchaseCount > 0 ? totalSales / purchaseCount : 0;
@@ -1585,10 +1586,10 @@
                 const time = tx.timestamp ? new Date(tx.timestamp.seconds * 1000).toLocaleTimeString() : '...';
                 const itemsStr = tx.items ? tx.items.map(i => `${i.name} (x${i.quantity})`).join(', ') : '';
                 
-                // MODIFIED to include refund
+                // MODIFIED to reflect 'cash_out' deduction
                 if (tx.type === 'purchase') return `<div class="bg-gray-700 p-3 rounded-lg"><p class="font-semibold">${tx.studentName} paid ${tx.stallName}</p><p class="text-sm">${itemsStr}</p><div class="flex justify-between items-center mt-1"><span class="text-red-400 font-bold">- ₹${tx.amount.toFixed(2)}</span><span class="text-xs text-gray-400">${time}</span></div></div>`;
                 else if (tx.type === 'recharge') return `<div class="bg-gray-700 p-3 rounded-lg"><p class="font-semibold">${tx.studentName} recharged wallet</p><p class="text-sm text-gray-400">Processed by: ${tx.adminName ? 'Admin' : 'Self'}</p><div class="flex justify-between items-center mt-1"><span class="text-green-400 font-bold">+ ₹${tx.amount.toFixed(2)}</span><span class="text-xs text-gray-400">${time}</span></div></div>`;
-                else if (tx.type === 'refund') return `<div class="bg-gray-700 p-3 rounded-lg"><p class="font-semibold">${tx.studentName} received a refund</p><p class="text-sm text-gray-400">Processed by: ${tx.adminName ? 'Admin' : 'Self'}</p><div class="flex justify-between items-center mt-1"><span class="text-green-400 font-bold">+ ₹${tx.amount.toFixed(2)}</span><span class="text-xs text-gray-400">${time}</span></div></div>`;
+                else if (tx.type === 'cash_out') return `<div class="bg-gray-700 p-3 rounded-lg"><p class="font-semibold">${tx.studentName} collected cash out</p><p class="text-sm text-gray-400">Deducted by: Admin</p><div class="flex justify-between items-center mt-1"><span class="text-red-400 font-bold">- ₹${tx.amount.toFixed(2)}</span><span class="text-xs text-gray-400">${time}</span></div></div>`;
                 else return '';
              }).reverse().join('');
             appState.allTransactionsForExport = transactions;
@@ -2094,10 +2095,10 @@
                     const tx = d.data(); const time = tx.timestamp ? new Date(tx.timestamp.seconds * 1000).toLocaleString() : '...';
                     const itemsStr = tx.items ? tx.items.map(i => `${i.name} (x${i.quantity})`).join(', ') : '';
                     
-                    // MODIFIED to include refund
+                    // MODIFIED to include cash_out
                     if (tx.type === 'purchase') return `<div class="bg-gray-700 p-3 rounded-lg"><p class="font-semibold">Paid ${tx.stallName}</p><p class="text-sm">${itemsStr}</p><div class="flex justify-between items-center mt-1"><span class="text-red-400 font-bold">- ₹${tx.amount.toFixed(2)}</span><span class="text-xs text-gray-400">${time}</span></div></div>`;
                     else if (tx.type === 'recharge') return `<div class="bg-gray-700 p-3 rounded-lg"><p class="font-semibold">Wallet Recharge</p><p class="text-sm text-gray-400">Processed by: ${tx.adminName?'Admin':'Self'}</p><div class="flex justify-between items-center mt-1"><span class="text-green-400 font-bold">+ ₹${tx.amount.toFixed(2)}</span><span class="text-xs text-gray-400">${time}</span></div></div>`;
-                    else if (tx.type === 'refund') return `<div class="bg-gray-700 p-3 rounded-lg"><p class="font-semibold">Wallet Refund</p><p class="text-sm text-gray-400">Processed by: ${tx.adminName?'Admin':'Self'}</p><div class="flex justify-between items-center mt-1"><span class="text-green-400 font-bold">+ ₹${tx.amount.toFixed(2)}</span><span class="text-xs text-gray-400">${time}</span></div></div>`;
+                    else if (tx.type === 'cash_out') return `<div class="bg-gray-700 p-3 rounded-lg"><p class="font-semibold">Cash Out Collected</p><p class="text-sm text-gray-400">Deducted by: Admin</p><div class="flex justify-between items-center mt-1"><span class="text-red-400 font-bold">- ₹${tx.amount.toFixed(2)}</span><span class="text-xs text-gray-400">${time}</span></div></div>`;
                     else return '';
                 }).reverse().join('');
             }, error => console.error("Error loading student history:", error)); currentUnsubscribes.push(unsub);
@@ -2387,13 +2388,18 @@
         function attachAdminRechargeListeners() { 
             const btnCancel = document.getElementById('btnAdminRechargeCancel');
             const btnConfirm = document.getElementById('btnAdminConfirmRecharge');
-            const btnRefund = document.getElementById('btnAdminConfirmRefund'); // NEW
-             if(btnCancel) btnCancel.onclick = () => loadAdminDashboard();
+            const btnCashOut = document.getElementById('btnAdminConfirmCashOut'); // MODIFIED ID
+            
+            if(btnCancel) btnCancel.onclick = () => loadAdminDashboard();
               else console.error("btnAdminRechargeCancel not found");
-             if(btnConfirm) btnConfirm.onclick = () => _processWalletUpdate('recharge'); // MODIFIED
+            
+            // Recharge calls with sign=1 (ADD)
+            if(btnConfirm) btnConfirm.onclick = () => _processBalanceChange('recharge', 1); 
              else console.error("btnAdminConfirmRecharge not found");
-             if(btnRefund) btnRefund.onclick = () => _processWalletUpdate('refund'); // NEW
-             else console.error("btnAdminConfirmRefund not found");
+            
+            // Cash Out calls with sign=-1 (DEDUCT)
+            if(btnCashOut) btnCashOut.onclick = () => _processBalanceChange('cash_out', -1); 
+             else console.error("btnAdminConfirmCashOut not found");
         }
 
         function startAdminRechargeScan() { 
@@ -2401,15 +2407,15 @@
             const detailsEl = document.getElementById('adminRechargeDetails');
             const scannerContainer = document.getElementById('admin-recharge-qr-reader-container');
             const confirmBtn = document.getElementById('btnAdminConfirmRecharge');
-            const refundBtn = document.getElementById('btnAdminConfirmRefund'); // NEW
+            const cashOutBtn = document.getElementById('btnAdminConfirmCashOut'); // MODIFIED
             const amountInput = document.getElementById('adminRechargeAmount');
-             if (!detailsEl || !scannerContainer || !confirmBtn || !amountInput || !refundBtn) { console.error("Missing elements for admin recharge scan"); return; } // MODIFIED
+             if (!detailsEl || !scannerContainer || !confirmBtn || !amountInput || !cashOutBtn) { console.error("Missing elements for admin recharge scan"); return; }
 
 
             detailsEl.classList.add('hidden');
             scannerContainer.classList.remove('hidden');
             confirmBtn.classList.add('hidden');
-            refundBtn.classList.add('hidden'); // NEW
+            cashOutBtn.classList.add('hidden'); // MODIFIED
             amountInput.value = '';
             
             if(!adminRechargeQrScanner) {
@@ -2425,7 +2431,7 @@
                     scannerContainer.classList.add('hidden');
                     detailsEl.classList.remove('hidden');
                     confirmBtn.classList.remove('hidden');
-                    refundBtn.classList.remove('hidden'); // NEW
+                    cashOutBtn.classList.remove('hidden'); // MODIFIED
 
                     const nameEl = document.getElementById('adminRechargeStudentName');
                     const balanceEl = document.getElementById('adminRechargeStudentBalance');
@@ -2438,8 +2444,8 @@
             }, (e)=>{/*console.warn(e)*/}).catch(err=>{showAlert("Camera error."); loadAdminDashboard();});
         }
         
-        // MODIFIED: Renamed from processAdminRecharge to handle both
-        async function _processWalletUpdate(type) { 
+        // MODIFIED: Renamed to _processBalanceChange and added sign logic
+        async function _processBalanceChange(type, sign) { 
              const amountInput = document.getElementById('adminRechargeAmount');
              if (!amountInput) { console.error("adminRechargeAmount input not found"); return; }
             const amount = parseFloat(amountInput.value);
@@ -2451,20 +2457,24 @@
                 await runTransaction(db, async tx => {
                     const studentDoc = await tx.get(studentRef); if (!studentDoc.exists()) throw new Error("Student not found.");
                     
-                    let updateAmount = amount;
-                    // Note: Both recharge and refund add to the balance in the transaction logic
+                    const changeAmount = amount * sign; // -amount for cash_out, +amount for recharge
+
+                    // Check for insufficient funds only if deducting
+                    if (sign === -1 && studentDoc.data().balance < amount) {
+                        throw new Error(`Insufficient funds. Current balance: ₹${studentDoc.data().balance.toFixed(2)}`);
+                    }
                     
-                    tx.update(studentRef, { balance: increment(updateAmount) }); 
+                    tx.update(studentRef, { balance: increment(changeAmount) }); 
                     tx.set(doc(transactionsRef()), { 
                         studentId, 
                         studentName:appState.scannedStudentName, 
-                        amount, 
-                        type: type, // 'recharge' or 'refund'
+                        amount, // Always log the positive absolute amount
+                        type: type, // 'recharge' or 'cash_out'
                         adminName:appState.currentUser?.id || 'admin', 
                         timestamp:serverTimestamp() 
                     });
                 });
-                showAlert(`${type.charAt(0).toUpperCase() + type.slice(1)} OK!`); 
+                showAlert(`${type === 'recharge' ? 'Recharge' : 'Cash Out'} OK!`); 
                 loadAdminDashboard();
             } catch (e) { showAlert(`Error: ${e.message}`); } finally { hideLoading(); }
         }
@@ -2731,7 +2741,7 @@
 
                 <!-- Panel 4: Reports -->
                 <div id="panel-reports" class="admin-tab-panel hidden space-y-6">
-                    <section class="bg-gray-800 p-6 rounded-lg shadow-xl space-y-4"> <h2 class="text-2xl font-semibold mb-4 text-yellow-300">Event Financials</h2> <div class="flex justify-between bg-gray-700 p-4 rounded-lg"> <span>Total Recharged:</span> <span id="adminTotalRecharged" class="text-lg font-bold text-green-400">₹0.00</span> </div> <div class="flex justify-between bg-gray-700 p-4 rounded-lg"> <span>Total Sales:</span> <span id="adminTotalSales" class="text-lg font-bold text-red-400">₹0.00</span> </div> <!-- NEW Refund Stat --> <div class="flex justify-between bg-gray-700 p-4 rounded-lg"> <span>Total Refunded:</span> <span id="adminTotalRefunded" class="text-lg font-bold text-yellow-400">₹0.00</span> </div> <div class="flex justify-between bg-gray-700 p-4 rounded-lg"> <span>Outstanding Balance:</span> <span id="adminOutstandingBalance" class="text-lg font-bold text-blue-400">₹0.00</span> </div> <div class="grid grid-cols-2 gap-4"> <div class="bg-gray-700 p-4 rounded-lg text-center"> <span class="text-sm text-gray-400">Total Transactions</span> <span id="adminTotalTransactions" class="text-2xl font-bold block">0</span> </div> <div class="bg-gray-700 p-4 rounded-lg text-center"> <span class="text-sm text-gray-400">Avg. Purchase</span> <span id="adminAvgPurchaseValue" class="text-2xl font-bold block">₹0.00</span> </div> </div> </section>
+                    <section class="bg-gray-800 p-6 rounded-lg shadow-xl space-y-4"> <h2 class="text-2xl font-semibold mb-4 text-yellow-300">Event Financials</h2> <div class="flex justify-between bg-gray-700 p-4 rounded-lg"> <span>Total Recharged:</span> <span id="adminTotalRecharged" class="text-lg font-bold text-green-400">₹0.00</span> </div> <div class="flex justify-between bg-gray-700 p-4 rounded-lg"> <span>Total Sales:</span> <span id="adminTotalSales" class="text-lg font-bold text-red-400">₹0.00</span> </div> <!-- NEW Refund Stat --> <div class="flex justify-between bg-gray-700 p-4 rounded-lg"> <span>Total Refunded (Cash Out):</span> <span id="adminTotalRefunded" class="text-lg font-bold text-yellow-400">₹0.00</span> </div> <div class="flex justify-between bg-gray-700 p-4 rounded-lg"> <span>Outstanding Balance:</span> <span id="adminOutstandingBalance" class="text-lg font-bold text-blue-400">₹0.00</span> </div> <div class="grid grid-cols-2 gap-4"> <div class="bg-gray-700 p-4 rounded-lg text-center"> <span class="text-sm text-gray-400">Total Transactions</span> <span id="adminTotalTransactions" class="text-2xl font-bold block">0</span> </div> <div class="bg-gray-700 p-4 rounded-lg text-center"> <span class="text-sm text-gray-400">Avg. Purchase</span> <span id="adminAvgPurchaseValue" class="text-2xl font-bold block">₹0.00</span> </div> </div> </section>
                     <section class="bg-gray-800 p-6 rounded-lg shadow-xl"> <h3 class="text-xl font-semibold mb-2">Sales per Stall</h3> <div id="adminStallSalesSummary" class="space-y-2 max-h-60 overflow-y-auto"> </div> </section>
                     <section class="bg-gray-800 p-6 rounded-lg shadow-xl"> <h3 class="text-xl font-semibold mb-2">Top-Selling Items</h3> <div id="adminTopItemsList" class="space-y-2 max-h-60 overflow-y-auto"> </div> </section> <section class="bg-gray-800 p-6 rounded-lg shadow-xl"> <h3 class="text-xl font-semibold mb-2">Total Spending by Class</h3> <div id="adminClassSpendingSummary" class="space-y-2 max-h-60 overflow-y-auto"> </div> </section>
                     <!-- NEW: Voting Results Summary -->
@@ -2947,12 +2957,12 @@
 
         <!-- VIEW: Admin Recharge --><div id="adminRechargeView" class="hidden">
              <!-- MODIFIED Title -->
-             <header class="my-8"> <div class="flex items-center space-x-3 mb-4"> <div> <h2 class="text-lg font-semibold text-white">Udaya Public School</h2> <p class="text-sm text-gray-400">Annual Fest 2025-26</p> </div> </div> <h1 class="text-3xl font-bold text-center text-green-400">Recharge / Refund Wallet</h1> </header>
+             <header class="my-8"> <div class="flex items-center space-x-3 mb-4"> <div> <h2 class="text-lg font-semibold text-white">Udaya Public School</h2> <p class="text-sm text-gray-400">Annual Fest 2025-26</p> </div> </div> <h1 class="text-3xl font-bold text-center text-green-400">Recharge / Cash Out Wallet</h1> </header>
              <main class="space-y-6"> <div id="admin-recharge-qr-reader-container"> <p class="text-center text-lg text-yellow-300 mb-4">Scanning for Student QR...</p> <div id="admin-recharge-qr-reader" class="w-full rounded-lg overflow-hidden border-4 border-gray-700"></div> </div> <div id="adminRechargeDetails" class="hidden space-y-6"> <section class="bg-gray-800 p-6 rounded-lg shadow-xl"> <h2 class="text-2xl font-semibold mb-2">Student Details</h2> <div class="flex justify-between items-center"> <span id="adminRechargeStudentName" class="text-xl"></span> <span id="adminRechargeStudentBalance" class="text-xl font-bold text-green-400"></span> </div> </section> <section class="bg-gray-800 p-6 rounded-lg shadow-xl"> <h2 class="text-2xl font-semibold mb-4">Enter Amount</h2> <input type="number" id="adminRechargeAmount" class="w-full bg-gray-700 text-white border border-gray-600 rounded-lg p-3 text-2xl" placeholder="e.g., 500"> </section> </div> 
              <!-- MODIFIED Button Layout -->
              <div class="space-y-4">
                  <button id="btnAdminConfirmRecharge" class="hidden w-full bg-green-600 hover:bg-green-700 text-white font-bold py-4 px-6 rounded-lg shadow-lg text-lg transition-all"> Confirm Recharge </button> 
-                 <button id="btnAdminConfirmRefund" class="hidden w-full bg-red-600 hover:bg-red-700 text-white font-bold py-4 px-6 rounded-lg shadow-lg text-lg transition-all"> Process Refund </button> 
+                 <button id="btnAdminConfirmCashOut" class="hidden w-full bg-red-600 hover:bg-red-700 text-white font-bold py-4 px-6 rounded-lg shadow-lg text-lg transition-all"> Deduct for Cash Out </button> 
                  <button id="btnAdminRechargeCancel" class="w-full bg-gray-700 hover:bg-gray-600 text-white font-bold py-3 px-4 rounded-lg shadow-lg transition-all"> Cancel </button> 
              </div>
             </main>
