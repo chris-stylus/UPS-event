@@ -60,7 +60,14 @@
             currentClassStudentList: [], // {id, name, class}
             eventInfo: "Welcome to the event! Details will be posted here.",
             votingConfig: [], // [{id: 'vote_xyz', title: 'Best Stall', options: ['Stall A', 'Stall B']}] // NEW
-            allStallsForExport: [] // NEW: For bulk stall QR download
+            allStallsForExport: [], // NEW: For bulk stall QR download
+            // NEW: Global Config State
+            globalConfig: {
+                schoolName: 'Udaya Public School',
+                schoolAddress: 'Mahadev Jharkhandi, Kunraghat, Gorakhpur',
+                eventName: 'ANNUAL FEST 2025-26',
+                eventDate: '1-FEB-2026'
+            }
         };
         let modal, modalMessage, modalButton;
         let confirmModal, confirmModalMessage, btnConfirmYes, btnConfirmNo;
@@ -244,6 +251,7 @@
                         // Preload shared data
                         preloadAllStallMenus();
                         loadEventInfo();
+                        loadGlobalConfig(); // NEW: Load global event settings
                         loadVotingConfig(); // Start listening to voting config here
                         hideLoading();
                         showView('home');
@@ -285,6 +293,61 @@
                 console.error("Error loading all stall menus:", error);
             });
             // We keep this running, so don't add to currentUnsubscribes
+        }
+
+        // NEW: Function to load and cache global config
+        function loadGlobalConfig() {
+            const unsub = onSnapshot(configRef(), (docSnap) => {
+                let defaultConfig = { ...appState.globalConfig }; // Use current defaults
+                if (docSnap.exists()) {
+                    const data = docSnap.data();
+                    appState.globalConfig = {
+                        schoolName: data.schoolName || defaultConfig.schoolName,
+                        schoolAddress: data.schoolAddress || defaultConfig.schoolAddress,
+                        eventName: data.eventName || defaultConfig.eventName,
+                        eventDate: data.eventDate || defaultConfig.eventDate
+                    };
+                }
+
+                // Only update Admin UI if on Admin Dashboard and relevant tab
+                if (appState.currentView === 'adminDashboard') {
+                    updateAdminGlobalConfigUI();
+                }
+                
+                // Update hardcoded text on Home and Student Pass immediately
+                updateGlobalTextUI();
+
+            }, (error) => {
+                console.error("Error loading global config:", error);
+            });
+            // Keep this running globally
+        }
+
+        // NEW: Function to update non-reactive text on the UI
+        function updateGlobalTextUI() {
+            const config = appState.globalConfig;
+            
+            // Home View Header Update
+            const homeSubtitle = document.querySelector('#homeView header .text-lg');
+            if(homeSubtitle) homeSubtitle.textContent = `${config.schoolName} - ${config.eventName}`;
+
+            // Student Pass Preview Update (Hardcoded HTML structure in index.html)
+            const passEl = document.getElementById('student-printable-pass');
+            if (passEl) {
+                const nameEl = passEl.querySelector('h3');
+                const addressEl = passEl.querySelector('p.text-xs.text-gray-600');
+                const eventNameEl = passEl.querySelector('p.text-sm.font-medium.text-gray-700');
+                const dateEl = passEl.querySelector('p.text-sm.font-semibold.text-gray-700');
+
+                if(nameEl) nameEl.textContent = config.schoolName;
+                if(addressEl) addressEl.textContent = config.schoolAddress;
+                if(eventNameEl) eventNameEl.textContent = config.eventName;
+                if(dateEl) dateEl.textContent = `Date: ${config.eventDate}`;
+            }
+
+            // Admin Dashboard Header
+            const adminSchoolNameEl = document.querySelector('#adminDashboardView header p.text-sm.text-gray-400');
+            if (adminSchoolNameEl) adminSchoolNameEl.textContent = config.schoolName;
         }
 
         // NEW: Update stall download button visibility
@@ -591,6 +654,7 @@
             loadAdminReports(); 
             loadAdminClasses();
             loadEventInfo(); // Reloads event info, which triggers voting config load
+            loadGlobalConfig(); // Reloads global config
             // Note: renderAdminVotingConfig is called inside loadVotingConfig listener.
             setTimeout(hideLoading, 500); 
         }
@@ -700,6 +764,11 @@
             // Panel: Event (Voting)
             const btnAddVotingCategory = document.getElementById('btnAdminAddVotingCategory');
             if(btnAddVotingCategory) btnAddVotingCategory.onclick = addVotingCategory;
+
+            // NEW: Panel Event (Global Config Save Button)
+            const btnSaveGlobalConfig = document.getElementById('btnAdminSaveGlobalConfig');
+            if(btnSaveGlobalConfig) btnSaveGlobalConfig.onclick = handleSaveGlobalConfig;
+            else console.error("btnAdminSaveGlobalConfig not found");
         }
 
         // Function to save event info
@@ -720,9 +789,52 @@
             }
         }
 
+        // NEW: Function to handle saving global config
+        async function handleSaveGlobalConfig() {
+            const schoolName = document.getElementById('adminSchoolNameInput')?.value;
+            const schoolAddress = document.getElementById('adminSchoolAddressInput')?.value;
+            const eventName = document.getElementById('adminEventNameInput')?.value;
+            const eventDate = document.getElementById('adminEventDateInput')?.value;
+
+            if (!schoolName || !schoolAddress || !eventName || !eventDate) {
+                return showAlert("All global configuration fields must be filled.");
+            }
+
+            showLoading("Saving global configuration...");
+            try {
+                // Use setDoc with merge to ensure we don't accidentally wipe other config data (like adminPassword or event info)
+                await setDoc(configRef(), {
+                    schoolName,
+                    schoolAddress,
+                    eventName,
+                    eventDate
+                }, { merge: true });
+                showAlert("Global configuration saved successfully!");
+            } catch (error) {
+                console.error("Error saving global config:", error);
+                showAlert("Error saving global config: " + error.message);
+            } finally {
+                hideLoading();
+            }
+        }
+
+        // NEW: Function to update Admin UI for Global Config
+        function updateAdminGlobalConfigUI() {
+            const config = appState.globalConfig;
+            const schoolNameInput = document.getElementById('adminSchoolNameInput');
+            const schoolAddressInput = document.getElementById('adminSchoolAddressInput');
+            const eventNameInput = document.getElementById('adminEventNameInput');
+            const eventDateInput = document.getElementById('adminEventDateInput');
+
+            if (schoolNameInput) schoolNameInput.value = config.schoolName;
+            if (schoolAddressInput) schoolAddressInput.value = config.schoolAddress;
+            if (eventNameInput) eventNameInput.value = config.eventName;
+            if (eventDateInput) eventDateInput.value = config.eventDate;
+        }
+
 
         // --- Renders entry pass (admin view has print/download) ---
-        // MODIFIED to accept isStall flag
+        // MODIFIED to accept isStall flag and use dynamic config
         function displayUserQR(containerElement, user) {
             if (!containerElement) { console.error("displayUserQR: containerElement is null"); return; }
             containerElement.innerHTML = ''; containerElement.classList.remove('hidden');
@@ -734,18 +846,19 @@
             const passTitle = isStall ? 'STALL QR PASS' : 'ENTRY PASS';
             const typeDetail = isStall ? `Stall Name: ${user.name}` : `Class: ${user.class || 'N/A'}`;
             const nameDisplay = isStall ? user.name : user.name;
-
+            const config = appState.globalConfig; // Use config
+            
 
             containerElement.innerHTML = `
                 <div id="${passId}" class="printable-area bg-white text-black p-6 rounded-lg shadow-lg max-w-xs mx-auto border-4 ${isStall ? 'border-green-600' : 'border-blue-600'}">
                     <div class="text-center border-b pb-4 border-gray-300">
-                        <h3 class="text-xl font-bold text-gray-800">Udaya Public School</h3>
-                        <p class="text-xs text-gray-600">Mahadev Jharkhandi, Kunraghat, Gorakhpur</p>
+                        <h3 class="text-xl font-bold text-gray-800">${config.schoolName}</h3>
+                        <p class="text-xs text-gray-600">${config.schoolAddress}</p>
                     </div>
                     <div class="my-4 text-center">
-                        <p class="text-sm font-medium text-gray-700">ANNUAL FEST 2025-26</p>
+                        <p class="text-sm font-medium text-gray-700">${config.eventName}</p>
                         <p class="text-2xl font-bold ${isStall ? 'text-green-600' : 'text-blue-600'}">${passTitle}</p>
-                        <p class="text-sm font-semibold text-gray-700">Date: 1-FEB-2026</p>
+                        <p class="text-sm font-semibold text-gray-700">Date: ${config.eventDate}</p>
                     </div>
                     <div class="my-4 text-center">
                         <p class="text-lg font-bold text-black">${nameDisplay}</p>
@@ -863,23 +976,25 @@
          * @param {string} qrId - The unique ID to use for the QR code container element
          * @returns {string} - The HTML string for the pass
          */
+        // MODIFIED to use dynamic config
         function getPassHtml(user, qrId) {
             const isStall = user.role === 'stall';
             const passTitle = isStall ? 'STALL QR PASS' : 'ENTRY PASS';
             const typeDetail = isStall ? `Stall Name: ${user.name}` : `Class: ${user.class || 'N/A'}`;
             const nameDisplay = isStall ? user.name : user.name;
             const borderColor = isStall ? '#10B981' : '#2563EB'; // Green for stall, Blue for student
+            const config = appState.globalConfig; // Use config
 
             return `
                 <div class="printable-area bg-white text-black p-6 rounded-lg shadow-lg border-4" style="width: 350px; height: auto; box-sizing: border-box; border-color: ${borderColor};">
                     <div class="text-center border-b pb-4 border-gray-300">
-                        <h3 class="text-xl font-bold text-gray-800" style="font-size: 1.25rem; line-height: 1.75rem;">Udaya Public School</h3>
-                        <p class="text-xs text-gray-600" style="font-size: 0.75rem; line-height: 1rem;">Mahadev Jharkhandi, Kunraghat, Gorakhpur</p>
+                        <h3 class="text-xl font-bold text-gray-800" style="font-size: 1.25rem; line-height: 1.75rem;">${config.schoolName}</h3>
+                        <p class="text-xs text-gray-600" style="font-size: 0.75rem; line-height: 1rem;">${config.schoolAddress}</p>
                     </div>
                     <div class="my-4 text-center">
-                        <p class="text-sm font-medium text-gray-700" style="font-size: 0.875rem; line-height: 1.25rem;">ANNUAL FEST 2025-26</p>
+                        <p class="text-sm font-medium text-gray-700" style="font-size: 0.875rem; line-height: 1.25rem;">${config.eventName}</p>
                         <p class="text-2xl font-bold" style="font-size: 1.5rem; line-height: 2rem; color: ${borderColor};">${passTitle}</p>
-                        <p class="text-sm font-semibold text-gray-700" style="font-size: 0.875rem; line-height: 1.25rem;">Date: 1-FEB-2026</p>
+                        <p class="text-sm font-semibold text-gray-700" style="font-size: 0.875rem; line-height: 1.25rem;">Date: ${config.eventDate}</p>
                     </div>
                     <div class="my-4 text-center">
                         <p class="text-lg font-bold text-black" style="font-size: 1.125rem; line-height: 1.75rem;">${nameDisplay}</p>
@@ -1115,6 +1230,9 @@
             // Event info is loaded globally, but we ensure textarea is populated
             const eventTextarea = document.getElementById('adminEventInfoTextarea');
             if (eventTextarea) eventTextarea.value = appState.eventInfo;
+            
+            // NEW: Update global config inputs
+            updateAdminGlobalConfigUI();
             
             // FIX: Manually call this to ensure the list is displayed when navigating to the Event tab
             renderAdminVotingConfig();
@@ -1398,14 +1516,14 @@
                 listEl.innerHTML = snapshot.docs.map(doc => {
                     const stall = doc.data();
                     return `<div class="bg-gray-700 p-4 rounded-lg">
-                                    <div class="flex justify-between items-center mb-2">
-                                        <h4 class="text-lg font-semibold">${stall.name}</h4>
-                                        <button data-id="${stall.ownerId}" data-name="${stall.name}" class="btn-delete-stall bg-red-600 hover:bg-red-700 text-white px-3 py-1 rounded-lg text-sm">Delete</button>
-                                    </div>
-                                    <div id="menu-list-${stall.ownerId}" class="mt-2 space-y-1">
-                                        ${renderMenuList(stall.menu, doc.id, true)} 
-                                    </div>
-                                </div>`;
+                                        <div class="flex justify-between items-center mb-2">
+                                            <h4 class="text-lg font-semibold">${stall.name}</h4>
+                                            <button data-id="${stall.ownerId}" data-name="${stall.name}" class="btn-delete-stall bg-red-600 hover:bg-red-700 text-white px-3 py-1 rounded-lg text-sm">Delete</button>
+                                        </div>
+                                        <div id="menu-list-${stall.ownerId}" class="mt-2 space-y-1">
+                                            ${renderMenuList(stall.menu, doc.id, true)} 
+                                        </div>
+                                    </div>`;
                 }).join('');
 
                 selectEl.innerHTML = snapshot.docs.map(doc => `<option value="${doc.id}">${doc.data().name}</option>`).join('');
@@ -1446,9 +1564,9 @@
                 const newStock = e.target.value;
                 const success = await updateItemStock(stallId, itemId, newStock);
                 if (!success) {
-                  const stallData = appState.allStallMenus[stallId]; 
-                  const oldStock = stallData?.menu?.find(i=>i.id===itemId)?.stock ?? 0;
-                  e.target.value = oldStock;
+                    const stallData = appState.allStallMenus[stallId]; 
+                    const oldStock = stallData?.menu?.find(i=>i.id===itemId)?.stock ?? 0;
+                    e.target.value = oldStock;
                 }
             }
         }
@@ -2671,12 +2789,12 @@
                             <div>
                                 <label for="adminStudentBulkUpload" class="block text-sm font-medium text-gray-300 mb-1">Upload CSV File</label>
                                 <input type="file" id="adminStudentBulkUpload" accept=".csv,application/vnd.ms-excel" class="w-full text-sm text-gray-400
-                                            file:mr-4 file:py-2 file:px-4
-                                            file:rounded-lg file:border-0
-                                            file:text-sm file:font-semibold
-                                            file:bg-purple-600 file:text-white
-                                            hover:file:bg-purple-700
-                                            cursor-pointer">
+                                         file:mr-4 file:py-2 file:px-4
+                                         file:rounded-lg file:border-0
+                                         file:text-sm file:font-semibold
+                                         file:bg-purple-600 file:text-white
+                                         hover:file:bg-purple-700
+                                         cursor-pointer">
                                 <p class="text-xs text-gray-400 mt-2">Required format: <code class="bg-gray-700 px-1 rounded">Name,Class</code> (one per line, no header row).</p>
                                 <p class="text-xs text-gray-400">Example: <code class="bg-gray-700 px-1 rounded">John Doe,10-A</code></p>
                             </div>
@@ -2756,13 +2874,40 @@
                         <button id="btnAdminRefreshReports" class="bg-yellow-600 hover:bg-yellow-700 text-white font-bold py-2 px-4 rounded-lg transition-all text-sm">Refresh Data</button> 
                     </section> 
                     <section> 
-                         <div id="adminTransactionList" class="space-y-3 max-h-96 overflow-y-auto"> </div> 
-                         <button id="btnExportCSV" class="w-full bg-blue-600 hover:bg-blue-700 text-white font-bold py-3 px-4 rounded-lg shadow-lg transition-all mt-4"> Export All Transactions to CSV </button>
+                        <div id="adminTransactionList" class="space-y-3 max-h-96 overflow-y-auto"> </div> 
+                        <button id="btnExportCSV" class="w-full bg-blue-600 hover:bg-blue-700 text-white font-bold py-3 px-4 rounded-lg shadow-lg transition-all mt-4"> Export All Transactions to CSV </button>
                     </section>
                 </div>
                 
                 <!-- NEW Panel 5: Manage Event Info & Voting Categories -->
                 <div id="panel-event" class="admin-tab-panel hidden space-y-6">
+                    
+                    <!-- NEW: Global Configuration Section -->
+                    <section class="bg-gray-800 p-6 rounded-lg shadow-xl">
+                        <h2 class="text-2xl font-semibold mb-4 text-green-300">Global Configuration</h2>
+                        <div class="space-y-4">
+                            <div>
+                                <label for="adminSchoolNameInput" class="block text-sm font-medium text-gray-300 mb-1">School Name</label>
+                                <input type="text" id="adminSchoolNameInput" class="w-full bg-gray-700 text-white border border-gray-600 rounded-lg p-3" placeholder="e.g., Udaya Public School">
+                            </div>
+                            <div>
+                                <label for="adminSchoolAddressInput" class="block text-sm font-medium text-gray-300 mb-1">School Address</label>
+                                <input type="text" id="adminSchoolAddressInput" class="w-full bg-gray-700 text-white border border-gray-600 rounded-lg p-3" placeholder="e.g., Mahadev Jharkhandi, Gorakhpur">
+                            </div>
+                            <div>
+                                <label for="adminEventNameInput" class="block text-sm font-medium text-gray-300 mb-1">Event Name</label>
+                                <input type="text" id="adminEventNameInput" class="w-full bg-gray-700 text-white border border-gray-600 rounded-lg p-3" placeholder="e.g., ANNUAL FEST 2025-26">
+                            </div>
+                            <div>
+                                <label for="adminEventDateInput" class="block text-sm font-medium text-gray-300 mb-1">Event Date</label>
+                                <input type="text" id="adminEventDateInput" class="w-full bg-gray-700 text-white border border-gray-600 rounded-lg p-3" placeholder="e.g., 1-FEB-2026">
+                            </div>
+                            <button id="btnAdminSaveGlobalConfig" class="w-full bg-green-600 hover:bg-green-700 text-white font-bold py-3 px-4 rounded-lg shadow-lg transition-all">
+                                Save Global Config
+                            </button>
+                        </div>
+                    </section>
+
                     <section class="bg-gray-800 p-6 rounded-lg shadow-xl">
                         <h2 class="text-2xl font-semibold mb-4 text-indigo-300">Edit Event Info</h2>
                         <div class="space-y-4">
@@ -2965,7 +3110,6 @@
                  <button id="btnAdminConfirmCashOut" class="hidden w-full bg-red-600 hover:bg-red-700 text-white font-bold py-4 px-6 rounded-lg shadow-lg text-lg transition-all"> Deduct for Cash Out </button> 
                  <button id="btnAdminRechargeCancel" class="w-full bg-gray-700 hover:bg-gray-600 text-white font-bold py-3 px-4 rounded-lg shadow-lg transition-all"> Cancel </button> 
              </div>
-            </main>
         </div>
 
         <!-- VIEW: Loading Overlay --><div id="loadingView" class="hidden fixed inset-0 bg-black bg-opacity-75 flex flex-col items-center justify-center z-50"> <div class="spinner w-16 h-16 border-4 border-gray-600 rounded-full"></div> <p id="loadingMessage" class="text-white text-xl mt-4">Loading...</p> </div>
