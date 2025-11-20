@@ -8,7 +8,7 @@
     <!-- 2. QR Code Generation Library --><script src="https://cdnjs.cloudflare.com/ajax/libs/qrcodejs/1.0.0/qrcode.min.js"></script>
     <!-- 3. QR Code Scanning Library --><script src="https://unpkg.com/html5-qrcode@2.0.9/dist/html5-qrcode.min.js"></script>
     <!-- 4. jsPDF Library --><script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf/2.5.1/jspdf.umd.min.js"></script>
-    <!-- 5. html2canvas Library (NEW) --><script src="https://cdnjs.cloudflare.com/ajax/libs/html2canvas/1.4.1/html2canvas.min.js"></script>
+    <!-- 5. html2canvas Library --><script src="https://cdnjs.cloudflare.com/ajax/libs/html2canvas/1.4.1/html2canvas.min.js"></script>
     <!-- 6. Firebase SDKs --><script type="module">
         // Import Firebase modules
         import { initializeApp } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-app.js";
@@ -38,7 +38,8 @@
             arrayUnion,
             arrayRemove,
             runTransaction,
-            setLogLevel
+            setLogLevel,
+            orderBy // ADDED: Import orderBy for sorting
         } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-firestore.js";
         import { getAnalytics } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-analytics.js";
 
@@ -59,9 +60,9 @@
             allStallMenus: {}, // { stallId: { name: 'Stall Name', menu: [...] } }
             currentClassStudentList: [], // {id, name, class}
             eventInfo: "Welcome to the event! Details will be posted here.",
-            votingConfig: [], // [{id: 'vote_xyz', title: 'Best Stall', options: ['Stall A', 'Stall B']}] // NEW
-            allStallsForExport: [], // NEW: For bulk stall QR download
-            // NEW: Global Config State
+            votingConfig: [], // [{id: 'vote_xyz', title: 'Best Stall', options: ['Stall A', 'Stall B']}] 
+            allStallsForExport: [], // For bulk stall QR download
+            // Global Config State
             globalConfig: {
                 schoolName: 'Udaya Public School',
                 schoolAddress: 'Mahadev Jharkhandi, Kunraghat, Gorakhpur',
@@ -73,6 +74,9 @@
         let confirmModal, confirmModalMessage, btnConfirmYes, btnConfirmNo;
         let confirmCallback = null;
         let editItemModal, editItemNameInput, editItemPriceInput, btnSaveItemChanges, btnCancelItemEdit, editItemId, editItemStallId;
+        
+        // NEW Global variable to temporarily hold stall login context
+        let stallLoginContext = { userId: null, userName: null, requiredPassword: null }; 
 
 
         // --- FIREBASE CONFIG & PATHS ---
@@ -90,7 +94,7 @@
         const classesRef = () => doc(db, 'artifacts', appId, 'public', 'data', 'eventConfig', 'classes');
         const eventInfoRef = () => doc(db, 'artifacts', appId, 'public', 'data', 'eventConfig', 'info');
         const votesRef = () => collection(db, 'artifacts', appId, 'public', 'data', 'votes');
-        // NEW: Voting Config Ref
+        // Voting Config Ref
         const votingConfigRef = () => doc(db, 'artifacts', appId, 'public', 'data', 'eventConfig', 'voting');
         
         let studentVotesCache = {}; // Cache for student's votes
@@ -113,6 +117,8 @@
                 stallPayment: document.getElementById('stallPaymentView'),
                 loading: document.getElementById('loadingView'),
                 adminRecharge: document.getElementById('adminRechargeView'),
+                // ADDED
+                stallPassword: document.getElementById('stallPasswordView'),
             };
             modal = document.getElementById('modal');
             modalMessage = document.getElementById('modalMessage');
@@ -189,6 +195,12 @@
             const btnSaveVotingOptions = document.getElementById('btnSaveVotingOptions');
             if(btnCancelVotingEdit) btnCancelVotingEdit.onclick = () => document.getElementById('editVotingOptionsModal')?.classList.add('hidden');
             if(btnSaveVotingOptions) btnSaveVotingOptions.onclick = handleSaveVotingOptions;
+
+            // Attach Stall Password Listeners (NEW)
+            const btnStallPasswordSubmit = document.getElementById('btnStallPasswordSubmit');
+            const btnStallPasswordCancel = document.getElementById('btnStallPasswordCancel');
+            if (btnStallPasswordSubmit) btnStallPasswordSubmit.onclick = handleStallPasswordSubmit;
+            if (btnStallPasswordCancel) btnStallPasswordCancel.onclick = () => showView('home');
         }
 
         async function initFirebase() {
@@ -251,7 +263,7 @@
                         // Preload shared data
                         preloadAllStallMenus();
                         loadEventInfo();
-                        loadGlobalConfig(); // NEW: Load global event settings
+                        loadGlobalConfig(); // Load global event settings
                         loadVotingConfig(); // Start listening to voting config here
                         hideLoading();
                         showView('home');
@@ -267,7 +279,7 @@
         function preloadAllStallMenus() {
             const unsub = onSnapshot(stallsRef(), (snapshot) => {
                 appState.allStallMenus = {};
-                // NEW: Store stalls for bulk download
+                // Store stalls for bulk download
                 appState.allStallsForExport = [];
 
                 snapshot.forEach(doc => {
@@ -276,7 +288,7 @@
                         name: stallData.name,
                         menu: stallData.menu || []
                     };
-                    // NEW: Add to export list
+                    // Add to export list
                     appState.allStallsForExport.push({ id: doc.id, name: stallData.name, role: 'stall' });
                 });
                 console.log("All stall menus loaded/updated:", appState.allStallMenus);
@@ -295,7 +307,7 @@
             // We keep this running, so don't add to currentUnsubscribes
         }
 
-        // NEW: Function to load and cache global config
+        // Function to load and cache global config
         function loadGlobalConfig() {
             const unsub = onSnapshot(configRef(), (docSnap) => {
                 let defaultConfig = { ...appState.globalConfig }; // Use current defaults
@@ -323,7 +335,7 @@
             // Keep this running globally
         }
 
-        // NEW: Function to update non-reactive text on the UI
+        // Function to update non-reactive text on the UI
         function updateGlobalTextUI() {
             const config = appState.globalConfig;
             
@@ -350,7 +362,7 @@
             if (adminSchoolNameEl) adminSchoolNameEl.textContent = config.schoolName;
         }
 
-        // NEW: Update stall download button visibility
+        // Update stall download button visibility
         function updateAdminStallBulkDownloadButton() {
             const btnDownloadAllStalls = document.getElementById('btnDownloadAllStallPasses');
             if (btnDownloadAllStalls) {
@@ -390,7 +402,7 @@
             // This listener also runs globally
         }
         
-        // NEW: Load Voting Config (now dynamic)
+        // Load Voting Config (now dynamic)
         function loadVotingConfig() {
             const unsub = onSnapshot(votingConfigRef(), (docSnap) => {
                 let config = [];
@@ -422,8 +434,6 @@
                 if(listEl) listEl.innerHTML = '<p class="text-red-500">Error loading voting data.</p>';
             });
             // FIX: Keep this listener active globally by not pushing to currentUnsubscribes, or manage it separately. 
-            // For now, let's keep it running globally to ensure data is updated wherever the user navigates.
-            // currentUnsubscribes.push(unsub); // Removed from here, moved cleanup to manual process if needed.
         }
         
         // Helper to format text with line breaks
@@ -576,9 +586,26 @@
                 if (!userDoc.exists()) throw new Error('Invalid QR Code.');
                 const user = userDoc.data();
                 if (user.role !== loginType) throw new Error(`Incorrect QR Code type (${user.role}).`);
-                appState.currentUser = { id: userId, ...user };
-                if (loginType === 'student') loadStudentDashboard();
-                else if (loginType === 'stall') loadStallDashboard();
+                
+                // --- MODIFIED STALL LOGIN LOGIC ---
+                if (loginType === 'stall') {
+                    const requiredPassword = user.password; 
+                    if (!requiredPassword) throw new Error("Stall configuration incomplete (missing password). Contact admin.");
+                    
+                    // Set currentUser *temporarily* for persistence across the password check
+                    appState.currentUser = { id: userId, ...user }; 
+                    
+                    // Show password prompt instead of immediate dashboard
+                    hideLoading();
+                    showStallPasswordPrompt(userId, user.name, requiredPassword);
+                    return; // EXIT here to wait for password input
+
+                } else if (loginType === 'student') {
+                    // Standard student login continues
+                    appState.currentUser = { id: userId, ...user };
+                    loadStudentDashboard();
+                }
+                // --- END MODIFIED STALL LOGIN LOGIC ---
             } catch (error) {
                 console.error("Login Scan Error:", error);
                 showAlert(error.message);
@@ -586,7 +613,51 @@
             }
         }
 
-        // --- ADMIN LOGIN VIEW LOGIC ---
+        // --- NEW STALL PASSWORD LOGIC ---
+        function showStallPasswordPrompt(userId, userName, requiredPassword) {
+            stallLoginContext = { userId, userName, requiredPassword };
+            const nameEl = document.getElementById('stallPassPromptName');
+            const inputEl = document.getElementById('stallPasswordInput');
+            if (nameEl && inputEl) {
+                nameEl.textContent = userName;
+                inputEl.value = ''; // Clear previous input
+                showView('stallPassword');
+            } else {
+                showAlert("Error: Missing password prompt elements.");
+                showView('home');
+            }
+        }
+        
+        async function handleStallPasswordSubmit() {
+            const inputEl = document.getElementById('stallPasswordInput');
+            if (!inputEl) return;
+            
+            const inputPassword = inputEl.value;
+            if (inputPassword === '') return showAlert("Please enter the password.");
+
+            showLoading("Verifying password...");
+
+            try {
+                // Perform verification
+                if (inputPassword === stallLoginContext.requiredPassword) {
+                    // Success: Finalize login
+                    showAlert(`Welcome, ${stallLoginContext.userName}!`);
+                    // loadStallDashboard relies on appState.currentUser being set, which we did in handleLoginScan
+                    loadStallDashboard(); 
+                } else {
+                    // Failure
+                    inputEl.value = '';
+                    throw new Error("Incorrect password.");
+                }
+            } catch (error) {
+                console.error("Stall Password Error:", error);
+                showAlert(error.message);
+                hideLoading();
+            }
+        }
+        // --- END NEW STALL PASSWORD LOGIC ---
+
+        // --- ADMIN LOGIN VIEW LOGIC (FIXED) ---
         function attachAdminLoginListeners() {
             const btnBack = document.getElementById('btnAdminLoginBack');
             const btnSubmit = document.getElementById('btnAdminLoginSubmit');
@@ -596,48 +667,63 @@
 
             if (btnSubmit) btnSubmit.onclick = async () => {
                 const passwordInput = document.getElementById('adminPassword');
-                if (!passwordInput) { console.error("adminPassword input not found"); return; }
+                const nameInput = document.getElementById('adminName');
+                const phoneInput = document.getElementById('adminPhone');
+
+                if (!passwordInput || !nameInput || !phoneInput) {
+                    console.error("Admin login inputs not found"); return;
+                }
+
                 const password = passwordInput.value;
-                if (!password) return showAlert('Please enter password.');
-                showLoading('Verifying password...');
+                const name = nameInput.value.trim();
+                const phone = phoneInput.value.trim();
+
+                if (!password || !name || !phone) return showAlert('Please enter name, phone number, and password.');
+                
+                showLoading('Verifying credentials...');
                 try {
-                    const configSnap = await getDoc(configRef());
-                    let correctPassword = '@cx1136'; // Default password
+                    // Default Admin Configuration
+                    const defaultName = 'Event Admin';
+                    const defaultPhone = '9876543210';
+                    const defaultPassword = '@cx1136'; 
 
-                    // Check if config exists and has the password field
-                    if (!configSnap.exists() || !configSnap.data()?.adminPassword) {
-                        console.log("Admin password not found in config, setting default '@cx1136'.");
-                        // Attempt to save the default password if it's missing (best effort)
-                        try {
-                            await setDoc(configRef(), { adminPassword: correctPassword }, { merge: true });
-                        } catch (saveError) {
-                            console.error("Could not save default admin password:", saveError);
-                            // Proceed with the default password anyway for this attempt
-                        }
-                    } else {
-                        correctPassword = configSnap.data().adminPassword;
-                    }
-
-                    // *** ADDED LOGGING ***
-                    console.log(`Admin Login Attempt: Entered='${password}', Expected='${correctPassword}'`);
+                    // 1. Ensure default configuration exists (use setDoc with merge)
+                    // This creates the document if it doesn't exist, or merges the default
+                    // credentials if they are missing, without overwriting existing fields.
+                    await setDoc(configRef(), { 
+                        adminPassword: defaultPassword, 
+                        adminName: defaultName, 
+                        adminPhone: defaultPhone 
+                    }, { merge: true });
                     
-                    if (password === correctPassword) {
-                        console.log("Admin password matches.");
-                        // ADDED try/catch to ensure loading indicator is hidden if load fails
-                        try {
-                            loadAdminDashboard();
-                        } catch (e) {
-                             console.error("Failed to load admin dashboard:", e);
-                            showAlert("Login successful, but failed to load dashboard view.");
-                            hideLoading();
-                        }
+                    // 2. Read the actual credentials (which might be the defaults or updated ones)
+                    const configSnap = await getDoc(configRef());
+                    
+                    let correctName = defaultName;
+                    let correctPhone = defaultPhone;
+                    let correctPassword = defaultPassword;
+
+                    if (configSnap.exists()) {
+                        const configData = configSnap.data();
+                        // Use stored values if available, otherwise fall back to the default
+                        correctName = configData.adminName || defaultName;
+                        correctPhone = configData.adminPhone || defaultPhone;
+                        correctPassword = configData.adminPassword || defaultPassword;
+                    }
+                    
+                    // 3. Validation
+                    if (name === correctName && phone === correctPhone && password === correctPassword) {
+                        console.log("Admin login successful.");
+                        appState.currentUser = { id: 'admin', role: 'admin', name: name }; 
+                        loadAdminDashboard();
                     } else {
-                        throw new Error('Wrong password.');
+                        // The original error point: throws if credentials don't match
+                        throw new Error('Invalid credentials.');
                     }
                 } catch (error) {
                     console.error("Admin Login Error:", error);
-                    showAlert(error.message); // Show the specific error (e.g., "Wrong password.")
-                    passwordInput.value = ''; // Clear password field on error
+                    showAlert(error.message); 
+                    passwordInput.value = ''; 
                     hideLoading();
                 }
             };
@@ -673,7 +759,7 @@
             setTimeout(hideLoading, 500);
         }
 
-        // --- ADMIN DASHBOARD LOGIC ---
+        // --- ADMIN DASHBOARD LOGIC (MODIFIED) ---
         function attachAdminDashboardListeners() {
             const btnLogout = document.getElementById('btnAdminLogout');
             if (btnLogout) btnLogout.onclick = logout;
@@ -789,7 +875,7 @@
             }
         }
 
-        // NEW: Function to handle saving global config
+        // Function to handle saving global config
         async function handleSaveGlobalConfig() {
             const schoolName = document.getElementById('adminSchoolNameInput')?.value;
             const schoolAddress = document.getElementById('adminSchoolAddressInput')?.value;
@@ -818,7 +904,7 @@
             }
         }
 
-        // NEW: Function to update Admin UI for Global Config
+        // Function to update Admin UI for Global Config
         function updateAdminGlobalConfigUI() {
             const config = appState.globalConfig;
             const schoolNameInput = document.getElementById('adminSchoolNameInput');
@@ -891,7 +977,7 @@
 
         // --- Print/Download Helpers ---
         function printPass(elementId) {
-             const passElement = document.getElementById(elementId);
+              const passElement = document.getElementById(elementId);
             if (!passElement) {
                 console.error('Could not find element to print:', elementId);
                 return;
@@ -1220,7 +1306,12 @@
 
         function loadAdminDashboard() {
              showView('adminDashboard');
-            appState.currentUser = { id: 'admin', role: 'admin' };
+            // appState.currentUser is now set in the login function
+            const adminNameEl = document.getElementById('adminDisplayName');
+            if (adminNameEl && appState.currentUser?.name) {
+                adminNameEl.textContent = appState.currentUser.name;
+            }
+
             // Load panel data
             loadAdminStudents(); 
             loadAdminStallsAndMenus(); 
@@ -1231,7 +1322,7 @@
             const eventTextarea = document.getElementById('adminEventInfoTextarea');
             if (eventTextarea) eventTextarea.value = appState.eventInfo;
             
-            // NEW: Update global config inputs
+            // Update global config inputs
             updateAdminGlobalConfigUI();
             
             // FIX: Manually call this to ensure the list is displayed when navigating to the Event tab
@@ -1255,7 +1346,15 @@
             if (!name) return showAlert(`Please enter ${role} name.`);
             showLoading(`Generating ${role}...`);
             try {
-                const newUser = { name, role, balance: role === 'student' ? 0 : null, class: studentClass, createdAt: serverTimestamp() };
+                // ADDED password field for stall users
+                const newUser = { 
+                    name, 
+                    role, 
+                    balance: role === 'student' ? 0 : null, 
+                    class: studentClass, 
+                    createdAt: serverTimestamp(),
+                    password: role === 'stall' ? '123456' : undefined
+                };
                 const newDocRef = await addDoc(usersRef(), newUser);
                 
                 // We will use the doc ID as the main user ID
@@ -1277,7 +1376,7 @@
                     const classSelect = document.getElementById('adminStudentClassSelect');
                     if(classSelect) classSelect.value = '';
                 }
-                showAlert(`${role} created successfully!`);
+                showAlert(`${role} created successfully! Stall Password is 123456.`);
             } catch (error) { showAlert(`Error creating ${role}.`); console.error(error); } finally { hideLoading(); }
         }
 
@@ -1516,14 +1615,14 @@
                 listEl.innerHTML = snapshot.docs.map(doc => {
                     const stall = doc.data();
                     return `<div class="bg-gray-700 p-4 rounded-lg">
-                                        <div class="flex justify-between items-center mb-2">
-                                            <h4 class="text-lg font-semibold">${stall.name}</h4>
-                                            <button data-id="${stall.ownerId}" data-name="${stall.name}" class="btn-delete-stall bg-red-600 hover:bg-red-700 text-white px-3 py-1 rounded-lg text-sm">Delete</button>
-                                        </div>
-                                        <div id="menu-list-${stall.ownerId}" class="mt-2 space-y-1">
-                                            ${renderMenuList(stall.menu, doc.id, true)} 
-                                        </div>
-                                    </div>`;
+                                             <div class="flex justify-between items-center mb-2">
+                                                 <h4 class="text-lg font-semibold">${stall.name}</h4>
+                                                 <button data-id="${stall.ownerId}" data-name="${stall.name}" class="btn-delete-stall bg-red-600 hover:bg-red-700 text-white px-3 py-1 rounded-lg text-sm">Delete</button>
+                                             </div>
+                                             <div id="menu-list-${stall.ownerId}" class="mt-2 space-y-1">
+                                                 ${renderMenuList(stall.menu, doc.id, true)} 
+                                             </div>
+                                         </div>`;
                 }).join('');
 
                 selectEl.innerHTML = snapshot.docs.map(doc => `<option value="${doc.id}">${doc.data().name}</option>`).join('');
@@ -1621,9 +1720,10 @@
             currentUnsubscribes.filter(unsub => unsub.name === 'reports-tx-unsub' || unsub.name === 'reports-users-unsub').forEach(unsub => unsub.unsub());
 
              let allTx = []; let studentMap = new Map();
-            // Note: onSnapshot listeners are used here, making this section reactive, but the explicit call
-            // will ensure the latest state is pulled if the listener somehow lagged or was killed.
-            const unsubTx = onSnapshot(query(transactionsRef()), snap => { allTx = snap.docs.map(d=>d.data()); _recalculateAdminReports(allTx, studentMap); }, e => console.error("Error loading transactions:", e));
+            // MODIFIED: Use orderBy('timestamp', 'desc') for latest-first sorting
+            const qTx = query(transactionsRef(), orderBy('timestamp', 'desc'));
+            
+            const unsubTx = onSnapshot(qTx, snap => { allTx = snap.docs.map(d=>d.data()); _recalculateAdminReports(allTx, studentMap); }, e => console.error("Error loading transactions:", e));
             
             const unsubUsers = onSnapshot(query(usersRef(), where('role', '==', 'student')), snap => { studentMap = new Map(snap.docs.map(d=>[d.id, d.data().class || 'N/A'])); _recalculateAdminReports(allTx, studentMap); }, e => console.error("Error loading users for report:", e));
             
@@ -1709,7 +1809,7 @@
                 else if (tx.type === 'recharge') return `<div class="bg-gray-700 p-3 rounded-lg"><p class="font-semibold">${tx.studentName} recharged wallet</p><p class="text-sm text-gray-400">Processed by: ${tx.adminName ? 'Admin' : 'Self'}</p><div class="flex justify-between items-center mt-1"><span class="text-green-400 font-bold">+ ₹${tx.amount.toFixed(2)}</span><span class="text-xs text-gray-400">${time}</span></div></div>`;
                 else if (tx.type === 'cash_out') return `<div class="bg-gray-700 p-3 rounded-lg"><p class="font-semibold">${tx.studentName} collected cash out</p><p class="text-sm text-gray-400">Deducted by: Admin</p><div class="flex justify-between items-center mt-1"><span class="text-red-400 font-bold">- ₹${tx.amount.toFixed(2)}</span><span class="text-xs text-gray-400">${time}</span></div></div>`;
                 else return '';
-             }).reverse().join('');
+             }).join(''); // REMOVED .reverse() because Firebase now handles descending order
             appState.allTransactionsForExport = transactions;
         }
         
@@ -1986,7 +2086,7 @@
             link.click();
         }
 
-        // --- STUDENT DASHBOARD LOGIC ---
+        // --- STUDENT DASHBOARD LOGIC (MODIFIED) ---
         function attachStudentDashboardListeners() { 
             const btnLogout = document.getElementById('btnStudentLogout');
             const btnBack = document.getElementById('btnStudentBack');
@@ -2205,7 +2305,8 @@
 
         function loadStudentTransactionHistory() { 
             if (!appState.currentUser) return;
-            const q = query(transactionsRef(), where('studentId', '==', appState.currentUser.id));
+            // MODIFIED: Use orderBy('timestamp', 'desc') for latest-first sorting
+            const q = query(transactionsRef(), where('studentId', '==', appState.currentUser.id), orderBy('timestamp', 'desc'));
             const listEl = document.getElementById('studentTransactionList');
              if (!listEl) { console.error("studentTransactionList not found"); return; }
             const unsub = onSnapshot(q, (snapshot) => {
@@ -2218,11 +2319,11 @@
                     else if (tx.type === 'recharge') return `<div class="bg-gray-700 p-3 rounded-lg"><p class="font-semibold">Wallet Recharge</p><p class="text-sm text-gray-400">Processed by: ${tx.adminName?'Admin':'Self'}</p><div class="flex justify-between items-center mt-1"><span class="text-green-400 font-bold">+ ₹${tx.amount.toFixed(2)}</span><span class="text-xs text-gray-400">${time}</span></div></div>`;
                     else if (tx.type === 'cash_out') return `<div class="bg-gray-700 p-3 rounded-lg"><p class="font-semibold">Cash Out Collected</p><p class="text-sm text-gray-400">Deducted by: Admin</p><div class="flex justify-between items-center mt-1"><span class="text-red-400 font-bold">- ₹${tx.amount.toFixed(2)}</span><span class="text-xs text-gray-400">${time}</span></div></div>`;
                     else return '';
-                }).reverse().join('');
+                }).join(''); // REMOVED .reverse()
             }, error => console.error("Error loading student history:", error)); currentUnsubscribes.push(unsub);
         }
 
-        // --- STALL DASHBOARD LOGIC ---
+        // --- STALL DASHBOARD LOGIC (MODIFIED) ---
         function attachStallDashboardListeners() { 
             const btnLogout = document.getElementById('btnStallLogout');
             const btnBack = document.getElementById('btnStallBack');
@@ -2288,7 +2389,8 @@
                 } else logout();
             }, error => { console.error("Error loading stall menu:", error); logout(); });
 
-            const q = query(transactionsRef(), where('stallId', '==', appState.currentUser.id));
+            // MODIFIED: Use orderBy('timestamp', 'desc') for latest-first sorting
+            const q = query(transactionsRef(), where('stallId', '==', appState.currentUser.id), orderBy('timestamp', 'desc'));
             const listEl = document.getElementById('stallSaleList');
             const totalEl = document.getElementById('stallTotalSales');
             if (!listEl || !totalEl) { console.error("Missing stall sales list/total elements"); return;}
@@ -2299,7 +2401,7 @@
                     const tx = d.data(); totalSales += tx.amount; const time = tx.timestamp ? new Date(tx.timestamp.seconds * 1000).toLocaleString() : '...';
                      const itemsStr = tx.items ? tx.items.map(i => `${i.name} (x${i.quantity})`).join(', ') : '';
                     return `<div class="bg-gray-700 p-3 rounded-lg"><p class="font-semibold">Sale to ${tx.studentName}</p><p class="text-sm">${itemsStr}</p><div class="flex justify-between items-center mt-1"><span class="text-green-400 font-bold">+ ₹${tx.amount.toFixed(2)}</span><span class="text-xs text-gray-400">${time}</span></div></div>`;
-                }).reverse().join('');
+                }).join(''); // REMOVED .reverse()
                 totalEl.textContent = `₹${totalSales.toFixed(2)}`;
             }, error => console.error("Error loading stall sales history:", error));
             
@@ -2376,7 +2478,7 @@
                         <p class="text-sm text-blue-300">₹${item.price.toFixed(2)}</p>
                     </div>
                     <div class="flex items-center space-x-3">
-                         <span class="text-xs ${item.stock <= 0 ? 'text-red-400 font-bold' : 'text-gray-300'}">(${item.stock || 0} left)</span>
+                          <span class="text-xs ${item.stock <= 0 ? 'text-red-400 font-bold' : 'text-gray-300'}">(${item.stock || 0} left)</span>
                         <button data-id="${item.id}" class="btn-cart-change bg-red-600 w-8 h-8 rounded-full font-bold text-lg">-</button>
                         <span id="cart-qty-${item.id}" class="text-xl font-bold w-10 text-center">0</span>
                         <button data-id="${item.id}" class="btn-cart-change bg-green-600 w-8 h-8 rounded-full font-bold text-lg">+</button>
@@ -2509,15 +2611,15 @@
             const btnCashOut = document.getElementById('btnAdminConfirmCashOut'); // MODIFIED ID
             
             if(btnCancel) btnCancel.onclick = () => loadAdminDashboard();
-              else console.error("btnAdminRechargeCancel not found");
+             else console.error("btnAdminRechargeCancel not found");
             
             // Recharge calls with sign=1 (ADD)
             if(btnConfirm) btnConfirm.onclick = () => _processBalanceChange('recharge', 1); 
-             else console.error("btnAdminConfirmRecharge not found");
+            else console.error("btnAdminConfirmRecharge not found");
             
             // Cash Out calls with sign=-1 (DEDUCT)
             if(btnCashOut) btnCashOut.onclick = () => _processBalanceChange('cash_out', -1); 
-             else console.error("btnAdminConfirmCashOut not found");
+            else console.error("btnAdminConfirmCashOut not found");
         }
 
         function startAdminRechargeScan() { 
@@ -2588,7 +2690,7 @@
                         studentName:appState.scannedStudentName, 
                         amount, // Always log the positive absolute amount
                         type: type, // 'recharge' or 'cash_out'
-                        adminName:appState.currentUser?.id || 'admin', 
+                        adminName:appState.currentUser?.name || 'admin', // Use admin's logged-in name
                         timestamp:serverTimestamp() 
                     });
                 });
@@ -2757,23 +2859,40 @@
             <main class="space-y-6"> <button id="btnAdminLogin" class="w-full bg-red-600 hover:bg-red-700 text-white font-bold py-4 px-6 rounded-lg shadow-lg text-lg transition-all">Admin Login</button> <button id="btnStallLogin" class="w-full bg-green-600 hover:bg-green-700 text-white font-bold py-4 px-6 rounded-lg shadow-lg text-lg transition-all">Stall Login (Scan QR)</button> <button id="btnStudentLogin" class="w-full bg-blue-600 hover:bg-blue-700 text-white font-bold py-4 px-6 rounded-lg shadow-lg text-lg transition-all">Student Login (Scan QR)</button> </main>
         </div>
 
-        <!-- VIEW: Admin Login --><div id="adminLoginView" class="hidden">
+        <!-- VIEW: Admin Login (MODIFIED) --><div id="adminLoginView" class="hidden">
             <header class="my-8"> <div class="flex items-center space-x-3 mb-4"> <div> <h2 class="text-lg font-semibold text-white">Udaya Public School</h2> <p class="text-sm text-gray-400">Annual Fest 2025-26</p> </div> </div> <button id="btnAdminLoginBack" class="text-blue-400 hover:text-blue-300">&larr; Back to Home</button> <h1 class="text-3xl font-bold text-center text-red-400 mt-4">Admin Login</h1> </header>
-            <main class="space-y-4 bg-gray-800 p-6 rounded-lg shadow-xl"> <div> <label for="adminPassword" class="block text-sm font-medium text-gray-300 mb-1">Password</label> <input type="password" id="adminPassword" class="w-full bg-gray-700 text-white border border-gray-600 rounded-lg p-3 focus:ring-red-500 focus:border-red-500" placeholder="••••••••"> </div> <button id="btnAdminLoginSubmit" class="w-full bg-red-600 hover:bg-red-700 text-white font-bold py-3 px-4 rounded-lg shadow-lg transition-all"> Login </button> 
+            <main class="space-y-4 bg-gray-800 p-6 rounded-lg shadow-xl"> 
+                <!-- NEW Input: Admin Name -->
+                <div> 
+                    <label for="adminName" class="block text-sm font-medium text-gray-300 mb-1">Admin Name</label> 
+                    <input type="text" id="adminName" class="w-full bg-gray-700 text-white border border-gray-600 rounded-lg p-3 focus:ring-red-500 focus:border-red-500" placeholder="Event Admin"> 
+                </div>
+                <!-- NEW Input: Phone Number -->
+                <div> 
+                    <label for="adminPhone" class="block text-sm font-medium text-gray-300 mb-1">Phone Number</label> 
+                    <input type="tel" id="adminPhone" class="w-full bg-gray-700 text-white border border-gray-600 rounded-lg p-3 focus:ring-red-500 focus:border-red-500" placeholder="9876543210"> 
+                </div>
+                <!-- Existing Input: Password -->
+                <div> 
+                    <label for="adminPassword" class="block text-sm font-medium text-gray-300 mb-1">Password</label> 
+                    <input type="password" id="adminPassword" class="w-full bg-gray-700 text-white border border-gray-600 rounded-lg p-3 focus:ring-red-500 focus:border-red-500" placeholder="••••••••"> 
+                </div> 
+                <button id="btnAdminLoginSubmit" class="w-full bg-red-600 hover:bg-red-700 text-white font-bold py-3 px-4 rounded-lg shadow-lg transition-all"> Login </button> 
             </main>
         </div>
 
-        <!-- VIEW: Admin Dashboard --><div id="adminDashboardView" class="hidden">
+        <!-- VIEW: Admin Dashboard (MODIFIED) --><div id="adminDashboardView" class="hidden">
             <header class="my-8 flex justify-between items-center"> 
                 <div class="flex items-center space-x-3"> 
                     <div> 
-                        <h1 class="text-3xl font-bold text-red-400">Admin Dashboard</h1> 
+                        <!-- MODIFIED to include admin name -->
+                        <h1 class="text-3xl font-bold text-red-400">Admin Dashboard (<span id="adminDisplayName">Admin</span>)</h1> 
                         <p class="text-sm text-gray-400">Udaya Public School</p> 
                     </div> 
                 </div> 
                 <div class="flex space-x-3">
                     <button id="btnAdminRefresh" class="bg-blue-600 hover:bg-blue-700 text-white font-medium py-2 px-4 rounded-lg text-sm transition-all self-start">Refresh Data</button>
-                    <button id="btnAdminLogout" class="bg-gray-700 hover:bg-gray-600 text-white font-medium py-2 px-4 rounded-lg text-sm transition-all self-start">Logout</button> 
+                    <button id="btnAdminLogout" class="bg-gray-700 hover:bg-gray-600 text-white font-medium py-2 px-4 rounded-lg text-sm transition-all self-start flex-shrink-0">Logout</button> 
                 </div>
             </header>
             <!-- Admin Tabs --><div class="mb-4 border-b border-gray-700"> <nav class="flex space-x-1 overflow-x-auto pb-2" aria-label="Tabs"> <button data-target="panel-students" class="admin-tab bg-blue-600 text-white px-4 py-3 rounded-t-lg font-medium text-sm flex-shrink-0">Students</button> <button data-target="panel-stalls" class="admin-tab bg-gray-700 text-gray-300 px-4 py-3 rounded-t-lg font-medium text-sm flex-shrink-0">Stalls</button> <button data-target="panel-classes" class="admin-tab bg-gray-700 text-gray-300 px-4 py-3 rounded-t-lg font-medium text-sm flex-shrink-0">Classes</button> <button data-target="panel-reports" class="admin-tab bg-gray-700 text-gray-300 px-4 py-3 rounded-t-lg font-medium text-sm flex-shrink-0">Reports</button> <!-- NEW TAB --> <button data-target="panel-event" class="admin-tab bg-gray-700 text-gray-300 px-4 py-3 rounded-t-lg font-medium text-sm flex-shrink-0">Event</button> </nav> </div>
@@ -2789,12 +2908,12 @@
                             <div>
                                 <label for="adminStudentBulkUpload" class="block text-sm font-medium text-gray-300 mb-1">Upload CSV File</label>
                                 <input type="file" id="adminStudentBulkUpload" accept=".csv,application/vnd.ms-excel" class="w-full text-sm text-gray-400
-                                         file:mr-4 file:py-2 file:px-4
-                                         file:rounded-lg file:border-0
-                                         file:text-sm file:font-semibold
-                                         file:bg-purple-600 file:text-white
-                                         hover:file:bg-purple-700
-                                         cursor-pointer">
+                                             file:mr-4 file:py-2 file:px-4
+                                             file:rounded-lg file:border-0
+                                             file:text-sm file:font-semibold
+                                             file:bg-purple-600 file:text-white
+                                             hover:file:bg-purple-700
+                                             cursor-pointer">
                                 <p class="text-xs text-gray-400 mt-2">Required format: <code class="bg-gray-700 px-1 rounded">Name,Class</code> (one per line, no header row).</p>
                                 <p class="text-xs text-gray-400">Example: <code class="bg-gray-700 px-1 rounded">John Doe,10-A</code></p>
                             </div>
@@ -2942,6 +3061,18 @@
         <!-- VIEW: Scanner --><div id="scannerView" class="hidden">
             <header class="my-8"> <div class="flex items-center space-x-3 mb-4"> <div> <h2 class="text-lg font-semibold text-white">Udaya Public School</h2> <p class="text-sm text-gray-400">Annual Fest 2025-26</p> </div> </div> <h1 id="scannerTitle" class="text-3xl font-bold text-center text-yellow-300">Scan QR Code</h1> </header>
             <main class="space-y-4"> <div id="qr-reader" class="w-full rounded-lg overflow-hidden border-4 border-gray-700"></div> <button id="btnCancelScan" class="w-full bg-gray-700 hover:bg-gray-600 text-white font-bold py-3 px-4 rounded-lg shadow-lg transition-all"> Cancel </button> </main>
+        </div>
+
+        <!-- NEW VIEW: Stall Password Prompt --><div id="stallPasswordView" class="hidden">
+            <header class="my-8">
+                <h1 class="text-3xl font-bold text-center text-green-400">Stall Security Check</h1>
+                <p class="text-center text-gray-400 mt-2">Enter the security password for <span id="stallPassPromptName" class="font-bold"></span>. **Default: 123456**</p>
+            </header>
+            <main class="space-y-6 bg-gray-800 p-6 rounded-lg shadow-xl">
+                <input type="password" id="stallPasswordInput" class="w-full bg-gray-700 text-white border border-gray-600 rounded-lg p-3 focus:ring-green-500 focus:border-green-500" placeholder="Stall Password">
+                <button id="btnStallPasswordSubmit" class="w-full bg-green-600 hover:bg-green-700 text-white font-bold py-3 px-4 rounded-lg shadow-lg transition-all"> Log In </button>
+                <button id="btnStallPasswordCancel" class="w-full bg-gray-700 hover:bg-gray-600 text-white font-bold py-3 px-4 rounded-lg shadow-lg transition-all"> Cancel </button>
+            </main>
         </div>
 
         <!-- VIEW: Student Dashboard --><div id="studentDashboardView" class="hidden">
