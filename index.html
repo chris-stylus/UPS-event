@@ -602,11 +602,11 @@
                 showLoading('Verifying password...');
                 try {
                     const configSnap = await getDoc(configRef());
-                    let correctPassword = '@cx1136'; // Default password
+                    let correctPassword = 'nhibatunga'; // Default password
 
                     // Check if config exists and has the password field
                     if (!configSnap.exists() || !configSnap.data()?.adminPassword) {
-                        console.log("Admin password not found in config, setting default '@cx1136'.");
+                        console.log("Admin password not found in config, setting default 'nhibatunga'.");
                         // Attempt to save the default password if it's missing (best effort)
                         try {
                             await setDoc(configRef(), { adminPassword: correctPassword }, { merge: true });
