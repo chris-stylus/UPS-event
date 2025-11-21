@@ -75,7 +75,7 @@
         let confirmCallback = null;
         let editItemModal, editItemNameInput, editItemPriceInput, btnSaveItemChanges, btnCancelItemEdit, editItemId, editItemStallId;
         
-        // NEW Global variable to temporarily hold stall login context
+        // Global variable to temporarily hold stall login context
         let stallLoginContext = { userId: null, userName: null, requiredPassword: null }; 
 
 
@@ -196,11 +196,67 @@
             if(btnCancelVotingEdit) btnCancelVotingEdit.onclick = () => document.getElementById('editVotingOptionsModal')?.classList.add('hidden');
             if(btnSaveVotingOptions) btnSaveVotingOptions.onclick = handleSaveVotingOptions;
 
-            // Attach Stall Password Listeners (NEW)
+            // Attach Stall Password Listeners
             const btnStallPasswordSubmit = document.getElementById('btnStallPasswordSubmit');
             const btnStallPasswordCancel = document.getElementById('btnStallPasswordCancel');
             if (btnStallPasswordSubmit) btnStallPasswordSubmit.onclick = handleStallPasswordSubmit;
             if (btnStallPasswordCancel) btnStallPasswordCancel.onclick = () => showView('home');
+        }
+
+        // Helper to ensure a default admin exists on first use.
+        async function ensureDefaultAdminExists() {
+            const defaultName = 'Event Admin';
+            const defaultPhone = '9876543210';
+            const defaultPassword = '@cx1136';
+            const defaultLevel = 'full'; // Define default level
+
+            try {
+                // 1. Check if an admin user already exists with the default name
+                const q = query(usersRef(), where('role', '==', 'admin'), where('name', '==', defaultName));
+                const snapshot = await getDocs(q);
+
+                if (snapshot.empty) {
+                    console.log("No default admin found. Creating one.");
+
+                    const newUser = { 
+                        name: defaultName, 
+                        role: 'admin', 
+                        phone: defaultPhone, 
+                        password: defaultPassword, 
+                        level: defaultLevel, // ADDED: Default level
+                        createdAt: serverTimestamp() 
+                    };
+                    const newDocRef = await addDoc(usersRef(), newUser);
+                    await updateDoc(newDocRef, { userId: newDocRef.id });
+                } else {
+                    // FIX: If the admin exists but is missing the 'level' field (from previous versions), update it.
+                    const adminDocRef = snapshot.docs[0].ref;
+                    const userData = snapshot.docs[0].data();
+                    
+                    // Check if any required fields are missing/incorrect (including ensuring the default is full access)
+                    if (userData.level !== defaultLevel || !userData.phone || !userData.password) {
+                        console.log("Default admin found but updating missing/incorrect fields.");
+                        await updateDoc(adminDocRef, { 
+                            level: userData.level || defaultLevel,
+                            phone: userData.phone || defaultPhone,
+                            password: userData.password || defaultPassword
+                        });
+                    }
+                    console.log("Default admin exists and fields checked.");
+                }
+            } catch (e) {
+                console.error("Error ensuring default admin exists:", e);
+                // Fallback attempt (less crucial now but kept for robustness)
+                 try {
+                     await setDoc(configRef(), { 
+                        adminPassword: defaultPassword, 
+                        adminName: defaultName, 
+                        adminPhone: defaultPhone 
+                    }, { merge: true });
+                 } catch (setDocError) {
+                     console.error("Fallback config set failed:", setDocError);
+                 }
+            }
         }
 
         async function initFirebase() {
@@ -248,6 +304,8 @@
                             } else {
                                 await signInAnonymously(auth);
                             }
+                            // Call ensureDefaultAdminExists AFTER sign-in, but BEFORE loading data
+                            await ensureDefaultAdminExists(); 
                             console.log("Firebase Auth successful.");
                         } catch (error) {
                             console.error("Auth Error:", error);
@@ -657,7 +715,7 @@
         }
         // --- END NEW STALL PASSWORD LOGIC ---
 
-        // --- ADMIN LOGIN VIEW LOGIC (FIXED) ---
+        // --- ADMIN LOGIN VIEW LOGIC (MODIFIED for Multi-Admin) ---
         function attachAdminLoginListeners() {
             const btnBack = document.getElementById('btnAdminLoginBack');
             const btnSubmit = document.getElementById('btnAdminLoginSubmit');
@@ -682,42 +740,29 @@
                 
                 showLoading('Verifying credentials...');
                 try {
-                    // Default Admin Configuration
-                    const defaultName = 'Event Admin';
-                    const defaultPhone = '9876543210';
-                    const defaultPassword = '@cx1136'; 
-
-                    // 1. Ensure default configuration exists (use setDoc with merge)
-                    // This creates the document if it doesn't exist, or merges the default
-                    // credentials if they are missing, without overwriting existing fields.
-                    await setDoc(configRef(), { 
-                        adminPassword: defaultPassword, 
-                        adminName: defaultName, 
-                        adminPhone: defaultPhone 
-                    }, { merge: true });
+                    // 1. Query Firestore for an admin user matching all three fields
+                    const q = query(usersRef(), 
+                        where('role', '==', 'admin'),
+                        where('name', '==', name),
+                        where('phone', '==', phone),
+                        where('password', '==', password)
+                    );
+                    const snapshot = await getDocs(q);
                     
-                    // 2. Read the actual credentials (which might be the defaults or updated ones)
-                    const configSnap = await getDoc(configRef());
-                    
-                    let correctName = defaultName;
-                    let correctPhone = defaultPhone;
-                    let correctPassword = defaultPassword;
-
-                    if (configSnap.exists()) {
-                        const configData = configSnap.data();
-                        // Use stored values if available, otherwise fall back to the default
-                        correctName = configData.adminName || defaultName;
-                        correctPhone = configData.adminPhone || defaultPhone;
-                        correctPassword = configData.adminPassword || defaultPassword;
-                    }
-                    
-                    // 3. Validation
-                    if (name === correctName && phone === correctPhone && password === correctPassword) {
+                    // 2. Validation
+                    if (!snapshot.empty) {
+                        const adminUserDoc = snapshot.docs[0];
+                        const userData = adminUserDoc.data();
                         console.log("Admin login successful.");
-                        appState.currentUser = { id: 'admin', role: 'admin', name: name }; 
+                        // MODIFIED: Capture all user data, including level, using spread operator
+                        appState.currentUser = { 
+                            id: adminUserDoc.id, 
+                            ...userData, // Capture all fields: name, phone, password, and MOST IMPORTANTLY: level
+                            role: 'admin', // Ensure role remains 'admin'
+                            level: userData.level || 'full' // Default to 'full' for safety if older record missing it
+                        }; 
                         loadAdminDashboard();
                     } else {
-                        // The original error point: throws if credentials don't match
                         throw new Error('Invalid credentials.');
                     }
                 } catch (error) {
@@ -739,6 +784,7 @@
             loadAdminStallsAndMenus(); 
             loadAdminReports(); 
             loadAdminClasses();
+            loadAdminUsers(); // ADDED
             loadEventInfo(); // Reloads event info, which triggers voting config load
             loadGlobalConfig(); // Reloads global config
             // Note: renderAdminVotingConfig is called inside loadVotingConfig listener.
@@ -841,6 +887,11 @@
             const btnRefreshReports = document.getElementById('btnAdminRefreshReports');
             if (btnRefreshReports) btnRefreshReports.onclick = () => loadAdminReports();
             else console.error("btnAdminRefreshReports not found");
+
+            // Panel: Admin Users
+            const btnAddAdmin = document.getElementById('btnAdminAddAdmin');
+            if(btnAddAdmin) btnAddAdmin.onclick = generateAdminUser;
+            else console.error("btnAdminAddAdmin not found");
             
             // Panel: Event
             const btnSaveEventInfo = document.getElementById('btnAdminSaveEventInfo');
@@ -855,6 +906,39 @@
             const btnSaveGlobalConfig = document.getElementById('btnAdminSaveGlobalConfig');
             if(btnSaveGlobalConfig) btnSaveGlobalConfig.onclick = handleSaveGlobalConfig;
             else console.error("btnAdminSaveGlobalConfig not found");
+        }
+
+        // --- NEW: Function to apply permission level restrictions (MODIFIED) ---
+        function applyAdminPermissions(adminLevel) {
+            const isFullAdmin = adminLevel === 'full';
+            
+            // Tabs/Panels that are RESTRICTED to ONLY Full Admins
+            const restrictedTabs = [
+                'panel-stalls', 
+                'panel-classes', 
+                'panel-reports', 
+                'panel-event', 
+                'panel-admin-users' 
+            ];
+            
+            // Hide restricted tabs and their buttons
+            restrictedTabs.forEach(id => {
+                const el = document.getElementById(id);
+                if (el) el.classList.toggle('hidden', !isFullAdmin);
+                // Also hide the corresponding tab buttons
+                document.querySelectorAll(`.admin-tab[data-target="${id}"]`).forEach(tab => {
+                    tab.classList.toggle('hidden', !isFullAdmin);
+                });
+            });
+
+            // The Students tab features are ALL visible to both 'full' and 'limited' admins.
+            const studentsTabButton = document.querySelector('.admin-tab[data-target="panel-students"]');
+            if (studentsTabButton) studentsTabButton.classList.remove('hidden');
+
+            if (!isFullAdmin) {
+                // For Limited Admins, automatically switch to the Students tab
+                studentsTabButton?.click();
+            }
         }
 
         // Function to save event info
@@ -1072,15 +1156,15 @@
             const config = appState.globalConfig; // Use config
 
             return `
-                <div class="printable-area bg-white text-black p-6 rounded-lg shadow-lg border-4" style="width: 350px; height: auto; box-sizing: border-box; border-color: ${borderColor};">
+                <div id="${qrId}_pass" class="printable-area bg-white text-black p-6 rounded-lg shadow-lg border-4" style="width: 350px; height: auto; box-sizing: border-box; border-color: ${borderColor};">
                     <div class="text-center border-b pb-4 border-gray-300">
-                        <h3 class="text-xl font-bold text-gray-800" style="font-size: 1.25rem; line-height: 1.75rem;">${config.schoolName}</h3>
-                        <p class="text-xs text-gray-600" style="font-size: 0.75rem; line-height: 1rem;">${config.schoolAddress}</p>
+                        <h3 class="text-xl font-bold text-gray-800">${config.schoolName}</h3>
+                        <p class="text-xs text-gray-600">${config.schoolAddress}</p>
                     </div>
                     <div class="my-4 text-center">
-                        <p class="text-sm font-medium text-gray-700" style="font-size: 0.875rem; line-height: 1.25rem;">${config.eventName}</p>
+                        <p class="text-sm font-medium text-gray-700">${config.eventName}</p>
                         <p class="text-2xl font-bold" style="font-size: 1.5rem; line-height: 2rem; color: ${borderColor};">${passTitle}</p>
-                        <p class="text-sm font-semibold text-gray-700" style="font-size: 0.875rem; line-height: 1.25rem;">Date: ${config.eventDate}</p>
+                        <p class="text-sm font-semibold text-gray-700">Date: ${config.eventDate}</p>
                     </div>
                     <div class="my-4 text-center">
                         <p class="text-lg font-bold text-black" style="font-size: 1.125rem; line-height: 1.75rem;">${nameDisplay}</p>
@@ -1182,7 +1266,8 @@
 
                 let canvas;
                 try {
-                    const passElement = renderContainer.firstElementChild;
+                    // Use the parent element created inside getPassHtml
+                    const passElement = document.getElementById(`${qrId}_pass`);
                     if (!passElement) throw new Error("Pass element not found in render container");
                     
                     canvas = await html2canvas(passElement, {
@@ -1267,37 +1352,83 @@
             } finally { hideLoading(); }
         }
 
-        // +++ NEW FUNCTION +++
+        // +++ MODIFIED FUNCTION: Student Name Partial Search +++
         async function searchStudentByName() {
             const studentNameInput = document.getElementById('adminSearchStudentName');
+            const resultListEl = document.getElementById('adminSearchStudentResultList'); // New list container
             const qrContainer = document.getElementById('adminSearchStudentQRContainer');
-            if (!studentNameInput || !qrContainer) {
+
+            if (!studentNameInput || !resultListEl || !qrContainer) {
                 console.error("Missing elements for student name search");
                 return;
             }
-            const studentName = studentNameInput.value;
-            if (!studentName) return showAlert('Please enter student name.');
-
-            showLoading('Searching...');
+            const searchTerm = studentNameInput.value.trim().toLowerCase();
+            resultListEl.innerHTML = '';
             qrContainer.innerHTML = '';
-            qrContainer.classList.add('hidden'); // Hide until found
+            qrContainer.classList.add('hidden');
 
+            if (!searchTerm) {
+                resultListEl.innerHTML = '<p class="text-gray-400">Enter a student name or partial name to search.</p>';
+                return;
+            }
+
+            showLoading(`Searching for students matching "${searchTerm}"...`);
+            
             try {
-                const q = query(usersRef(), where('role', '==', 'student'), where('name', '==', studentName));
-                const snapshot = await getDocs(q);
-                if (snapshot.empty) throw new Error('No student found with that name.');
+                // To perform a "contains" search in Firestore, you need to query the entire collection 
+                // and filter client-side, OR, if only searching for names that START WITH a term, you can use range queries.
+                // Since this is a small event wallet app, client-side filtering after a broad query is feasible for "contains".
+                // However, for performance, we will implement the efficient "starts with" range query:
+                const nameStart = searchTerm.charAt(0).toUpperCase() + searchTerm.slice(1);
+                const nameEnd = nameStart.slice(0, -1) + String.fromCharCode(nameStart.charCodeAt(nameStart.length - 1) + 1);
 
-                const studentDoc = snapshot.docs[0];
-                const studentUser = { id: studentDoc.id, role: 'student', ...studentDoc.data() };
-
-                // Use the existing displayUserQR function which handles UI
-                displayUserQR(qrContainer, studentUser);
+                // This query fetches all student names starting with 'A' to 'Z' (case insensitive for start)
+                // Note: The `name` field must be indexed.
+                const q = query(usersRef(), 
+                    where('role', '==', 'student'), 
+                    orderBy('name'), 
+                    // This creates a case-sensitive 'starts with' range query in Firestore
+                    where('name', '>=', nameStart), 
+                    where('name', '<', nameEnd)
+                );
                 
-                studentNameInput.value = '';
+                const snapshot = await getDocs(q);
+                let results = snapshot.docs.map(doc => ({ id: doc.id, ...doc.data() }));
+
+                // Client-side filter for partial match (using lowercase for robustness)
+                const filteredResults = results.filter(student => 
+                    student.name.toLowerCase().includes(searchTerm)
+                );
+                
+                if (filteredResults.length === 0) {
+                    throw new Error(`No students found matching "${searchTerm}".`);
+                }
+
+                resultListEl.innerHTML = filteredResults.map(student =>
+                    `<button class="btn-select-student w-full text-left bg-gray-700 hover:bg-blue-600 p-3 rounded-lg flex justify-between items-center" 
+                            data-id="${student.id}" 
+                            data-name="${escapeHTML(student.name)}" 
+                            data-class="${escapeHTML(student.class || 'N/A')}" 
+                            data-role="student">
+                        <span class="font-semibold">${student.name}</span>
+                        <span class="text-sm text-gray-400 bg-gray-600 px-2 py-0.5 rounded">${student.class || 'N/A'}</span>
+                    </button>`
+                ).join('');
+
+                // Attach listener to each result button
+                document.querySelectorAll('.btn-select-student').forEach(btn => {
+                    btn.onclick = (e) => {
+                        document.querySelectorAll('.btn-select-student').forEach(b => b.classList.remove('bg-blue-600'));
+                        e.currentTarget.classList.add('bg-blue-600');
+                        // Display the QR code for the selected student
+                        displayUserQR(qrContainer, e.currentTarget.dataset);
+                    };
+                });
+                
             } catch (error) {
-                showAlert(error.message);
-                qrContainer.innerHTML = `<p class="text-red-500">${error.message}</p>`;
-                qrContainer.classList.remove('hidden'); // Show error
+                const message = error.message.includes('No students') ? error.message : `Search failed: ${error.message}`;
+                resultListEl.innerHTML = `<p class="text-red-500 p-3">${message}</p>`;
+                qrContainer.classList.add('hidden');
             } finally {
                 hideLoading();
             }
@@ -1317,6 +1448,7 @@
             loadAdminStallsAndMenus(); 
             loadAdminReports(); 
             loadAdminClasses();
+            loadAdminUsers(); // ADDED
             loadAdminVotingResults(); 
             // Event info is loaded globally, but we ensure textarea is populated
             const eventTextarea = document.getElementById('adminEventInfoTextarea');
@@ -1324,6 +1456,10 @@
             
             // Update global config inputs
             updateAdminGlobalConfigUI();
+            
+            // Apply permissions based on user level (MODIFIED)
+            const adminLevel = appState.currentUser?.level || 'full'; // Default to full for safety
+            applyAdminPermissions(adminLevel); 
             
             // FIX: Manually call this to ensure the list is displayed when navigating to the Event tab
             renderAdminVotingConfig();
@@ -1376,9 +1512,104 @@
                     const classSelect = document.getElementById('adminStudentClassSelect');
                     if(classSelect) classSelect.value = '';
                 }
-                showAlert(`${role} created successfully! Stall Password is 123456.`);
+                // NOTE: Stall password notification added here
+                showAlert(`${role} created successfully! ${role === 'stall' ? 'Stall Password is 123456.' : ''}`);
             } catch (error) { showAlert(`Error creating ${role}.`); console.error(error); } finally { hideLoading(); }
         }
+
+        // --- NEW ADMIN USER GENERATION LOGIC ---
+        
+        async function generateAdminUser() {
+            const nameInput = document.getElementById('adminNewAdminName');
+            const phoneInput = document.getElementById('adminNewAdminPhone');
+            const passwordInput = document.getElementById('adminNewAdminPassword');
+            
+            if (!nameInput || !phoneInput || !passwordInput) {
+                console.error("Missing input elements for admin generation"); return;
+            }
+
+            const name = nameInput.value.trim();
+            const phone = phoneInput.value.trim();
+            const password = passwordInput.value;
+
+            if (!name || !phone || !password) return showAlert('Please fill all fields.');
+
+            showLoading(`Generating Admin User...`);
+            try {
+                const newUser = { 
+                    name, 
+                    role: 'admin', 
+                    phone, 
+                    password, 
+                    level: 'limited', // NEW admins default to LIMITED access
+                    createdAt: serverTimestamp() 
+                };
+                const newDocRef = await addDoc(usersRef(), newUser);
+                await updateDoc(newDocRef, { userId: newDocRef.id });
+
+                nameInput.value = '';
+                phoneInput.value = '';
+                passwordInput.value = '';
+                showAlert(`Admin user "${name}" created successfully! They have limited access.`);
+            } catch (error) { 
+                showAlert(`Error creating admin user: ${error.message}`); 
+                console.error(error); 
+            } finally { 
+                hideLoading(); 
+            }
+        }
+        
+        function loadAdminUsers() {
+            const q = query(usersRef(), where('role', '==', 'admin'));
+            const unsub = onSnapshot(q, (snapshot) => {
+                const listEl = document.getElementById('adminUserList');
+                if (!listEl) { console.error("adminUserList not found"); return; }
+                
+                listEl.innerHTML = snapshot.empty ? '<p class="text-gray-400">No admin users found.</p>' : 
+                    snapshot.docs.map(d => {
+                        const userData = d.data();
+                        const isDefaultAdmin = userData.name === 'Event Admin' && userData.phone === '9876543210' && userData.password === '@cx1136';
+                        const levelDisplay = userData.level === 'full' ? 'Full Access' : 'Limited Access';
+                        
+                        return `<div class="bg-gray-700 p-3 rounded-lg flex justify-between items-center space-x-2">
+                                    <div class="flex-1">
+                                        <span class="block font-semibold">${userData.name}</span>
+                                        <span class="block text-xs text-blue-400">${levelDisplay}</span>
+                                        <span class="block text-xs text-gray-400">Phone: ${userData.phone}</span>
+                                        <span class="block text-xs text-gray-400">ID: ${d.id}</span>
+                                    </div>
+                                    <div class="flex-shrink-0">
+                                        ${isDefaultAdmin ? 
+                                            `<span class="text-xs text-yellow-500 font-bold">Default Admin</span>` : 
+                                            `<button data-id="${d.id}" data-name="${userData.name}" class="btn-delete-user bg-red-600 hover:bg-red-700 text-white px-3 py-1 rounded-lg text-sm">Delete Admin</button>`
+                                        }
+                                    </div>
+                                </div>`;
+                    }).join('');
+
+                document.querySelectorAll('.btn-delete-user').forEach(btn => {
+                    const userId = btn.dataset.id;
+                    const userName = btn.dataset.name;
+                    btn.onclick = () => showConfirm(`Permanently delete admin user "${userName}"?`, () => _deleteUser(userId));
+                });
+            }, error => console.error("Error loading admin users:", error)); 
+            currentUnsubscribes.push(unsub);
+        }
+
+        async function _deleteUser(userId) {
+            if (!userId) return; showLoading('Deleting user...');
+            try { 
+                await deleteDoc(doc(usersRef(), userId)); 
+                showAlert('Admin user deleted successfully.');
+            }
+            catch (e) { 
+                showAlert('Error: ' + e.message); 
+            } finally { 
+                hideLoading(); 
+            }
+        }
+
+        // --- END NEW ADMIN USER GENERATION LOGIC ---
 
 
         function loadAdminClasses() {
@@ -1930,7 +2161,7 @@
             
             document.querySelectorAll('.btn-delete-voting-category').forEach(btn => {
                 const { id, title } = btn.dataset;
-                btn.onclick = () => showConfirm(`Delete category "${title}"? This will remove all associated votes!`, () => deleteVotingCategory(id, title));
+                btn.onclick = () => showConfirm(`Delete category "${title}"?`, () => deleteVotingCategory(id, title));
             });
             
             document.querySelectorAll('.btn-edit-voting-options').forEach(btn => {
@@ -2895,11 +3126,20 @@
                     <button id="btnAdminLogout" class="bg-gray-700 hover:bg-gray-600 text-white font-medium py-2 px-4 rounded-lg text-sm transition-all self-start flex-shrink-0">Logout</button> 
                 </div>
             </header>
-            <!-- Admin Tabs --><div class="mb-4 border-b border-gray-700"> <nav class="flex space-x-1 overflow-x-auto pb-2" aria-label="Tabs"> <button data-target="panel-students" class="admin-tab bg-blue-600 text-white px-4 py-3 rounded-t-lg font-medium text-sm flex-shrink-0">Students</button> <button data-target="panel-stalls" class="admin-tab bg-gray-700 text-gray-300 px-4 py-3 rounded-t-lg font-medium text-sm flex-shrink-0">Stalls</button> <button data-target="panel-classes" class="admin-tab bg-gray-700 text-gray-300 px-4 py-3 rounded-t-lg font-medium text-sm flex-shrink-0">Classes</button> <button data-target="panel-reports" class="admin-tab bg-gray-700 text-gray-300 px-4 py-3 rounded-t-lg font-medium text-sm flex-shrink-0">Reports</button> <!-- NEW TAB --> <button data-target="panel-event" class="admin-tab bg-gray-700 text-gray-300 px-4 py-3 rounded-t-lg font-medium text-sm flex-shrink-0">Event</button> </nav> </div>
+            <!-- Admin Tabs (MODIFIED: Added Admins tab) --><div class="mb-4 border-b border-gray-700"> <nav class="flex space-x-1 overflow-x-auto pb-2" aria-label="Tabs"> <button data-target="panel-students" class="admin-tab bg-blue-600 text-white px-4 py-3 rounded-t-lg font-medium text-sm flex-shrink-0">Students</button> <button data-target="panel-stalls" class="admin-tab bg-gray-700 text-gray-300 px-4 py-3 rounded-t-lg font-medium text-sm flex-shrink-0">Stalls</button> <button data-target="panel-classes" class="admin-tab bg-gray-700 text-gray-300 px-4 py-3 rounded-t-lg font-medium text-sm flex-shrink-0">Classes</button> <button data-target="panel-reports" class="admin-tab bg-gray-700 text-gray-300 px-4 py-3 rounded-t-lg font-medium text-sm flex-shrink-0">Reports</button> <button data-target="panel-event" class="admin-tab bg-gray-700 text-gray-300 px-4 py-3 rounded-t-lg font-medium text-sm flex-shrink-0">Event</button> <button data-target="panel-admin-users" class="admin-tab bg-gray-700 text-gray-300 px-4 py-3 rounded-t-lg font-medium text-sm flex-shrink-0">Admins</button> </nav> </div>
             <main class="space-y-6">
-                <!-- Panel 1: Manage Students -->
+                <!-- Panel 1: Manage Students (ALL features visible to Limited Admin now) -->
                 <div id="panel-students" class="admin-tab-panel space-y-6">
-                    <section class="bg-gray-800 p-6 rounded-lg shadow-xl"> <h2 class="text-2xl font-semibold mb-4 text-blue-300">Generate Student</h2> <div class="space-y-4"> <input type="text" id="adminStudentName" class="w-full bg-gray-700 text-white border border-gray-600 rounded-lg p-3" placeholder="Student Name"> <select id="adminStudentClassSelect" class="w-full bg-gray-700 text-white border border-gray-600 rounded-lg p-3"> <option value="">Select a Class</option> </select> <button id="btnAdminGenerateStudent" class="w-full bg-blue-600 hover:bg-blue-700 text-white font-bold py-3 px-4 rounded-lg shadow-lg transition-all"> Generate Student QR </button> <div id="adminStudentQRContainer" class="mt-4"> </div> <button id="btnAdminRechargeStudent" class="w-full bg-green-600 hover:bg-green-700 text-white font-bold py-3 px-4 rounded-lg shadow-lg transition-all mt-4"> Recharge / Refund Student (Scan QR) </button> </div> </section>
+                    <!-- RECHARGE SECTION (ALWAYS VISIBLE FOR ALL ADMINS) -->
+                    <section class="bg-gray-800 p-6 rounded-lg shadow-xl"> 
+                        <h2 class="text-2xl font-semibold mb-4 text-green-300">Recharge / Refund</h2> 
+                        <button id="btnAdminRechargeStudent" class="w-full bg-green-600 hover:bg-green-700 text-white font-bold py-3 px-4 rounded-lg shadow-lg transition-all"> 
+                            Recharge / Refund Student (Scan QR) 
+                        </button> 
+                    </section>
+                    
+                    <!-- RESTRUCTURED: All student management features are now directly under panel-students -->
+                    <section class="bg-gray-800 p-6 rounded-lg shadow-xl"> <h2 class="text-2xl font-semibold mb-4 text-blue-300">Generate Student</h2> <div class="space-y-4"> <input type="text" id="adminStudentName" class="w-full bg-gray-700 text-white border border-gray-600 rounded-lg p-3" placeholder="Student Name"> <select id="adminStudentClassSelect" class="w-full bg-gray-700 text-white border border-gray-600 rounded-lg p-3"> <option value="">Select a Class</option> </select> <button id="btnAdminGenerateStudent" class="w-full bg-blue-600 hover:bg-blue-700 text-white font-bold py-3 px-4 rounded-lg shadow-lg transition-all"> Generate Student QR </button> <div id="adminStudentQRContainer" class="mt-4"> </div> </div> </section>
                     
                     <!-- NEW Bulk Import Section -->
                     <section class="bg-gray-800 p-6 rounded-lg shadow-xl">
@@ -2908,12 +3148,12 @@
                             <div>
                                 <label for="adminStudentBulkUpload" class="block text-sm font-medium text-gray-300 mb-1">Upload CSV File</label>
                                 <input type="file" id="adminStudentBulkUpload" accept=".csv,application/vnd.ms-excel" class="w-full text-sm text-gray-400
-                                             file:mr-4 file:py-2 file:px-4
-                                             file:rounded-lg file:border-0
-                                             file:text-sm file:font-semibold
-                                             file:bg-purple-600 file:text-white
-                                             hover:file:bg-purple-700
-                                             cursor-pointer">
+                                            file:mr-4 file:py-2 file:px-4
+                                            file:rounded-lg file:border-0
+                                            file:text-sm file:font-semibold
+                                            file:bg-purple-600 file:text-white
+                                            hover:file:bg-purple-700
+                                            cursor-pointer">
                                 <p class="text-xs text-gray-400 mt-2">Required format: <code class="bg-gray-700 px-1 rounded">Name,Class</code> (one per line, no header row).</p>
                                 <p class="text-xs text-gray-400">Example: <code class="bg-gray-700 px-1 rounded">John Doe,10-A</code></p>
                             </div>
@@ -2923,14 +3163,18 @@
                         </div>
                     </section>
                     
-                    <!-- +++ NEW SECTION +++ -->
+                    <!-- +++ MODIFIED SECTION +++ -->
                     <section class="bg-gray-800 p-6 rounded-lg shadow-xl">
                         <h2 class="text-2xl font-semibold mb-4 text-yellow-300">Find Student by Name</h2>
                         <div class="space-y-4">
-                            <input type="text" id="adminSearchStudentName" class="w-full bg-gray-700 text-white border border-gray-600 rounded-lg p-3" placeholder="Enter Full Student Name">
+                            <input type="text" id="adminSearchStudentName" class="w-full bg-gray-700 text-white border border-gray-600 rounded-lg p-3" placeholder="Enter full or partial student name">
                             <button id="btnAdminSearchStudent" class="w-full bg-yellow-600 hover:bg-yellow-700 text-white font-bold py-3 px-4 rounded-lg shadow-lg transition-all">
-                                Search Student
+                                Search Students
                             </button>
+                            <div id="adminSearchStudentResultList" class="space-y-2 max-h-60 overflow-y-auto pt-2">
+                                <!-- Results will be populated here -->
+                                <p class="text-gray-400">Enter a student name or partial name to search.</p>
+                            </div>
                             <div id="adminSearchStudentQRContainer" class="mt-4 hidden">
                                 <!-- QR will be rendered here by displayUserQR -->
                             </div>
@@ -3053,6 +3297,23 @@
                         <div id="adminVotingCategoriesList" class="space-y-3">
                             <p class="text-gray-400">Loading categories...</p>
                         </div>
+                    </section>
+                </div>
+
+                <!-- NEW Panel 6: Manage Admin Users -->
+                <div id="panel-admin-users" class="admin-tab-panel hidden space-y-6">
+                    <section class="bg-gray-800 p-6 rounded-lg shadow-xl"> 
+                        <h2 class="text-2xl font-semibold mb-4 text-red-400">Add New Admin User (Limited Access)</h2> 
+                        <div class="space-y-4">
+                            <input type="text" id="adminNewAdminName" class="w-full bg-gray-700 text-white border border-gray-600 rounded-lg p-3" placeholder="Admin Name (e.g., John Smith)">
+                            <input type="tel" id="adminNewAdminPhone" class="w-full bg-gray-700 text-white border border-gray-600 rounded-lg p-3" placeholder="Phone Number (e.g., 1234567890)">
+                            <input type="password" id="adminNewAdminPassword" class="w-full bg-gray-700 text-white border border-gray-600 rounded-lg p-3" placeholder="Admin Password">
+                            <button id="btnAdminAddAdmin" class="w-full bg-red-600 hover:bg-red-700 text-white font-bold py-3 px-4 rounded-lg shadow-lg transition-all"> Add New Admin </button>
+                        </div> 
+                    </section>
+                    <section> 
+                        <h2 class="text-2xl font-semibold mb-4">Current Admin Users</h2> 
+                        <div id="adminUserList" class="space-y-3"> </div> 
                     </section>
                 </div>
             </main>
@@ -3218,7 +3479,15 @@
         </div>
 
         <!-- VIEW: Stall Payment --><div id="stallPaymentView" class="hidden">
-            <header class="my-8"> <div class="flex items-center space-x-3 mb-4"> <div> <h2 class="text-lg font-semibold text-white">Udaya Public School</h2> <p class="text-sm text-gray-400">Annual Fest 2025-26</p> </div> </div> <h1 class="text-3xl font-bold text-center text-blue-400">Process Payment</h1> </header>
+            <header class="my-8"> 
+                <div class="flex items-center space-x-3 mb-4"> 
+                    <div> 
+                        <h2 class="text-lg font-semibold text-white">Udaya Public School</h2> 
+                        <p class="text-sm text-gray-400">Annual Fest 2025-26</p> 
+                    </div> 
+                </div> 
+                <h1 class="text-3xl font-bold text-center text-blue-400">Process Payment</h1> 
+            </header>
             <main class="space-y-6">
                  <div id="stall-qr-reader-container"> <p class="text-center text-lg text-yellow-300 mb-4">Scanning for Student QR...</p> <div id="stall-qr-reader" class"w-full rounded-lg overflow-hidden border-4 border-gray-700"></div> </div>
                 <div id="stallPaymentDetails" class="hidden space-y-6">
@@ -3234,14 +3503,17 @@
         <!-- VIEW: Admin Recharge --><div id="adminRechargeView" class="hidden">
              <!-- MODIFIED Title -->
              <header class="my-8"> <div class="flex items-center space-x-3 mb-4"> <div> <h2 class="text-lg font-semibold text-white">Udaya Public School</h2> <p class="text-sm text-gray-400">Annual Fest 2025-26</p> </div> </div> <h1 class="text-3xl font-bold text-center text-green-400">Recharge / Cash Out Wallet</h1> </header>
-             <main class="space-y-6"> <div id="admin-recharge-qr-reader-container"> <p class="text-center text-lg text-yellow-300 mb-4">Scanning for Student QR...</p> <div id="admin-recharge-qr-reader" class="w-full rounded-lg overflow-hidden border-4 border-gray-700"></div> </div> <div id="adminRechargeDetails" class="hidden space-y-6"> <section class="bg-gray-800 p-6 rounded-lg shadow-xl"> <h2 class="text-2xl font-semibold mb-2">Student Details</h2> <div class="flex justify-between items-center"> <span id="adminRechargeStudentName" class="text-xl"></span> <span id="adminRechargeStudentBalance" class="text-xl font-bold text-green-400"></span> </div> </section> <section class="bg-gray-800 p-6 rounded-lg shadow-xl"> <h2 class="text-2xl font-semibold mb-4">Enter Amount</h2> <input type="number" id="adminRechargeAmount" class="w-full bg-gray-700 text-white border border-gray-600 rounded-lg p-3 text-2xl" placeholder="e.g., 500"> </section> </div> 
-             <!-- MODIFIED Button Layout -->
-             <div class="space-y-4">
-                 <button id="btnAdminConfirmRecharge" class="hidden w-full bg-green-600 hover:bg-green-700 text-white font-bold py-4 px-6 rounded-lg shadow-lg text-lg transition-all"> Confirm Recharge </button> 
-                 <button id="btnAdminConfirmCashOut" class="hidden w-full bg-red-600 hover:bg-red-700 text-white font-bold py-4 px-6 rounded-lg shadow-lg text-lg transition-all"> Deduct for Cash Out </button> 
-                 <button id="btnAdminRechargeCancel" class="w-full bg-gray-700 hover:bg-gray-600 text-white font-bold py-3 px-4 rounded-lg shadow-lg transition-all"> Cancel </button> 
-             </div>
-        </div>
+             <main class="space-y-6"> 
+                 <div id="admin-recharge-qr-reader-container"> <p class="text-center text-lg text-yellow-300 mb-4">Scanning for Student QR...</p> <div id="admin-recharge-qr-reader" class="w-full rounded-lg overflow-hidden border-4 border-gray-700"></div> </div> 
+                 <div id="adminRechargeDetails" class="hidden space-y-6"> <section class="bg-gray-800 p-6 rounded-lg shadow-xl"> <h2 class="text-2xl font-semibold mb-2">Student Details</h2> <div class="flex justify-between items-center"> <span id="adminRechargeStudentName" class="text-xl"></span> <span id="adminRechargeStudentBalance" class="text-xl font-bold text-green-400"></span> </div> </section> <section class="bg-gray-800 p-6 rounded-lg shadow-xl"> <h2 class="text-2xl font-semibold mb-4">Enter Amount</h2> <input type="number" id="adminRechargeAmount" class="w-full bg-gray-700 text-white border border-gray-600 rounded-lg p-3 text-2xl" placeholder="e.g., 500"> </section> </div> 
+                 <!-- MODIFIED Button Layout -->
+                 <div class="space-y-4">
+                     <button id="btnAdminConfirmRecharge" class="hidden w-full bg-green-600 hover:bg-green-700 text-white font-bold py-4 px-6 rounded-lg shadow-lg text-lg transition-all"> Confirm Recharge </button> 
+                     <button id="btnAdminConfirmCashOut" class="hidden w-full bg-red-600 hover:bg-red-700 text-white font-bold py-4 px-6 rounded-lg shadow-lg text-lg transition-all"> Deduct for Cash Out </button> 
+                     <button id="btnAdminRechargeCancel" class="w-full bg-gray-700 hover:bg-gray-600 text-white font-bold py-3 px-4 rounded-lg shadow-lg transition-all"> Cancel </button> 
+                 </div>
+             </main>
+         </div>
 
         <!-- VIEW: Loading Overlay --><div id="loadingView" class="hidden fixed inset-0 bg-black bg-opacity-75 flex flex-col items-center justify-center z-50"> <div class="spinner w-16 h-16 border-4 border-gray-600 rounded-full"></div> <p id="loadingMessage" class="text-white text-xl mt-4">Loading...</p> </div>
         <!-- Modal (Alert) --><div id="modal" class="hidden fixed inset-0 bg-black bg-opacity-75 flex items-center justify-center z-50 p-4"> <div class="bg-white text-black p-6 rounded-lg shadow-xl max-w-sm w-full"> <p id="modalMessage" class="text-lg mb-4">This is an alert message.</p> <button id="modalButton" class="w-full bg-blue-600 hover:bg-blue-700 text-white font-bold py-2 px-4 rounded-lg"> OK </button> </div> </div>
