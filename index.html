@@ -1,3 +1,4 @@
+
 <!DOCTYPE html>
 <html lang="en">
 <head>
@@ -2728,7 +2729,284 @@
         }
         // --- END NEW BULK IMPORT FUNCTIONS ---
 
-    </script>
+       // ==========================================
+    // NEW FEATURES: MASTER/SUB-ADMIN LOGIC
+    // ==========================================
+
+    // 1. Extend Global State
+    // We add a specific flag to know if the current user is a Sub-Admin
+    appState.isSubAdmin = false; 
+    appState.subAdminDetails = null; // { id, name }
+
+    // 2. Collection Reference for Sub-Admins
+    const subAdminsRef = () => collection(db, 'artifacts', appId, 'public', 'data', 'subAdmins');
+
+    // 3. Initialize New Listeners on DOMContentLoaded
+    // We append this logic to the existing flow without modifying the original init
+    const originalDOMContentLoaded = document.onreadystatechange; // Check if already bound, otherwise add listener
+
+    // Helper to hook into your existing setup
+    document.addEventListener('DOMContentLoaded', () => {
+        setupMasterAdminUI();
+    });
+
+    function setupMasterAdminUI() {
+        // --- A. Home Screen Modification (Inject Staff Login Button) ---
+        const homeMain = document.querySelector('#homeView main');
+        if (homeMain && !document.getElementById('btnStaffLoginEntry')) {
+            const btnStaff = document.createElement('button');
+            btnStaff.id = 'btnStaffLoginEntry';
+            btnStaff.className = "w-full bg-teal-600 hover:bg-teal-700 text-white font-bold py-4 px-6 rounded-lg shadow-lg text-lg transition-all mt-4";
+            btnStaff.textContent = "Event Staff Login";
+            btnStaff.onclick = () => showView('subAdminLogin');
+            homeMain.appendChild(btnStaff);
+        }
+
+        // --- B. Admin Dashboard Modification (Inject 'Manage Staff' Button) ---
+        // We inject this only when the main admin loads their dashboard
+        // This is handled by a periodic check or we can hook into the view change, 
+        // but for safety, we simply attach a mutation observer or check when Admin View is active.
+        const adminHeader = document.querySelector('#adminDashboardView header .flex.space-x-3');
+        if (adminHeader && !document.getElementById('btnOpenMasterPanel')) {
+            const btnManage = document.createElement('button');
+            btnManage.id = 'btnOpenMasterPanel';
+            btnManage.className = "bg-purple-600 hover:bg-purple-700 text-white font-medium py-2 px-4 rounded-lg text-sm transition-all self-start hidden"; // Hidden by default, shown only for Master Admin
+            btnManage.textContent = "Manage Staff";
+            btnManage.onclick = () => {
+                document.getElementById('masterAdminPanelView').classList.remove('hidden');
+                loadSubAdmins();
+                loadSubAdminStats();
+            };
+            adminHeader.insertBefore(btnManage, adminHeader.firstChild);
+        }
+
+        // --- C. Attach Sub-Admin Login Listeners ---
+        const btnSubBack = document.getElementById('btnSubAdminLoginBack');
+        const btnSubSubmit = document.getElementById('btnSubAdminLoginSubmit');
+        
+        if (btnSubBack) btnSubBack.onclick = () => showView('home');
+        if (btnSubSubmit) btnSubSubmit.onclick = handleSubAdminLogin;
+
+        // --- D. Master Panel Listeners ---
+        const btnCreate = document.getElementById('btnCreateSubAdmin');
+        const btnClose = document.getElementById('btnCloseMasterPanel');
+
+        if (btnCreate) btnCreate.onclick = createSubAdmin;
+        if (btnClose) btnClose.onclick = () => document.getElementById('masterAdminPanelView').classList.add('hidden');
+    }
+
+    // 4. Sub-Admin Login Logic
+    async function handleSubAdminLogin() {
+        const idInput = document.getElementById('subAdminIdInput');
+        const passInput = document.getElementById('subAdminPassInput');
+        const id = idInput.value.trim();
+        const pass = passInput.value.trim();
+
+        if(!id || !pass) return showAlert("Please enter ID and Password");
+
+        showLoading('Verifying Staff...');
+
+        try {
+            // Check credentials in Firestore
+            const q = query(subAdminsRef(), where('loginId', '==', id), where('password', '==', pass));
+            const snapshot = await getDocs(q);
+
+            if (snapshot.empty) {
+                throw new Error("Invalid Staff Credentials");
+            }
+
+            const staffDoc = snapshot.docs[0].data();
+            
+            // Set App State to Admin Mode but mark as Sub-Admin
+            appState.currentUser = { id: 'admin', role: 'admin' }; // Re-use existing admin logic for dashboard access
+            appState.isSubAdmin = true;
+            appState.subAdminDetails = { id: snapshot.docs[0].id, name: staffDoc.name };
+
+            // Load standard admin dashboard
+            // We use the existing function but hide specific Master features later
+            loadAdminDashboard(); 
+            
+            // Custom UI tweaks for Sub-Admin
+            setTimeout(() => {
+                const title = document.querySelector('#adminDashboardView h1');
+                if(title) title.textContent = `Staff: ${staffDoc.name}`;
+                
+                // HIDE features Sub-Admins shouldn't see (e.g., Global Config, create other admins)
+                const manageBtn = document.getElementById('btnOpenMasterPanel');
+                if(manageBtn) manageBtn.classList.add('hidden');
+                
+                // Hide Reports Tab? (Optional - keeping it visible as per request "just like main admin")
+                // Hide Global Config Save?
+                const globalSaveBtn = document.getElementById('btnAdminSaveGlobalConfig');
+                if(globalSaveBtn) globalSaveBtn.parentElement.classList.add('hidden'); // Hide global config inputs
+            }, 100);
+
+            idInput.value = '';
+            passInput.value = '';
+
+        } catch (e) {
+            console.error(e);
+            showAlert(e.message);
+        } finally {
+            hideLoading();
+        }
+    }
+
+    // 5. Override/Hook into Recharge Logic for Tracking
+    // We need to intercept the existing `_processBalanceChange` to add tracking info
+    // Since we cannot modify the original function easily, we will overwrite the global function 
+    // BUT we will copy the original logic code inside it, adding our specific tracking fields.
+    
+    // IMPORTANT: Storing the reference to the original recharge logic isn't enough because the 
+    // function creates a specific object structure. I will redefine `_processBalanceChange` 
+    // to include the sub-admin tracking logic while keeping original functionality.
+
+    const originalProcessBalanceChange = _processBalanceChange; // Backup just in case
+
+    // Redefine the function to include "processorId" and "processorName"
+    _processBalanceChange = async function(type, sign) {
+        const amountInput = document.getElementById('adminRechargeAmount');
+        if (!amountInput) { console.error("adminRechargeAmount input not found"); return; }
+        const amount = parseFloat(amountInput.value);
+        if (!amount || amount <= 0) return showAlert('Invalid amount.');
+        if (!appState.scannedStudentId) { showAlert("No student scanned."); return; }
+
+        showLoading('Processing...'); 
+        const studentId = appState.scannedStudentId; 
+        const studentRef = doc(usersRef(), studentId);
+
+        // DETERMINE WHO IS DOING THE ACTION
+        const processorId = appState.isSubAdmin ? appState.subAdminDetails.id : 'MASTER_ADMIN';
+        const processorName = appState.isSubAdmin ? appState.subAdminDetails.name : 'Main Admin';
+
+        try {
+            await runTransaction(db, async tx => {
+                const studentDoc = await tx.get(studentRef); 
+                if (!studentDoc.exists()) throw new Error("Student not found.");
+                
+                const changeAmount = amount * sign;
+
+                if (sign === -1 && studentDoc.data().balance < amount) {
+                    throw new Error(`Insufficient funds. Current balance: ₹${studentDoc.data().balance.toFixed(2)}`);
+                }
+                
+                tx.update(studentRef, { balance: increment(changeAmount) }); 
+                
+                // --- MODIFIED TRANSACTION LOG ---
+                tx.set(doc(transactionsRef()), { 
+                    studentId, 
+                    studentName: appState.scannedStudentName, 
+                    amount, 
+                    type: type, 
+                    adminName: processorName, // Existing field used for display
+                    processorId: processorId, // NEW FIELD: For backend tracking
+                    timestamp: serverTimestamp() 
+                });
+                // --------------------------------
+            });
+            showAlert(`${type === 'recharge' ? 'Recharge' : 'Cash Out'} OK!`); 
+            loadAdminDashboard();
+        } catch (e) { 
+            showAlert(`Error: ${e.message}`); 
+        } finally { 
+            hideLoading(); 
+        }
+    };
+
+    // 6. Master Admin Management Functions
+    async function createSubAdmin() {
+        const name = document.getElementById('newSubAdminName').value;
+        const id = document.getElementById('newSubAdminId').value;
+        const pass = document.getElementById('newSubAdminPass').value;
+
+        if(!name || !id || !pass) return showAlert("Fill all fields");
+
+        showLoading("Creating Staff...");
+        try {
+            await addDoc(subAdminsRef(), {
+                name, loginId: id, password: pass, createdAt: serverTimestamp()
+            });
+            showAlert("Staff Account Created!");
+            document.getElementById('newSubAdminName').value = '';
+            document.getElementById('newSubAdminId').value = '';
+            document.getElementById('newSubAdminPass').value = '';
+            loadSubAdmins(); // Refresh list
+        } catch(e) {
+            showAlert("Error: " + e.message);
+        } finally {
+            hideLoading();
+        }
+    }
+
+    function loadSubAdmins() {
+        const list = document.getElementById('subAdminList');
+        onSnapshot(query(subAdminsRef()), (snap) => {
+            if(snap.empty) { list.innerHTML = '<p class="text-gray-400">No staff created yet.</p>'; return; }
+            
+            list.innerHTML = snap.docs.map(d => {
+                const data = d.data();
+                return `
+                <div class="bg-gray-700 p-3 rounded flex justify-between items-center sub-admin-card">
+                    <div>
+                        <p class="font-bold text-white">${data.name}</p>
+                        <p class="text-xs text-gray-400">ID: ${data.loginId} | Pass: ${data.password}</p>
+                    </div>
+                    <button onclick="deleteSubAdmin('${d.id}')" class="text-red-400 text-xs hover:text-red-300">Remove</button>
+                </div>`;
+            }).join('');
+        });
+    }
+
+    async function deleteSubAdmin(id) {
+        if(confirm("Delete this staff account?")) {
+            await deleteDoc(doc(subAdminsRef(), id));
+        }
+    }
+
+    // 7. Sub-Admin Stats (Tracking who recharged what)
+    function loadSubAdminStats() {
+        const list = document.getElementById('subAdminStatsList');
+        // We query transactions where type is recharge
+        onSnapshot(query(transactionsRef(), where('type', '==', 'recharge')), (snap) => {
+            const stats = {}; // { 'Admin Name': totalAmount }
+            
+            snap.forEach(d => {
+                const data = d.data();
+                const name = data.adminName || 'Unknown';
+                if(!stats[name]) stats[name] = 0;
+                stats[name] += data.amount;
+            });
+
+            if(Object.keys(stats).length === 0) { list.innerHTML = '<p class="text-gray-400">No recharges recorded.</p>'; return; }
+
+            list.innerHTML = Object.entries(stats).map(([name, total]) => `
+                <div class="staff-stat-row">
+                    <span class="text-white">${name}</span>
+                    <span class="text-green-400 font-bold">₹${total.toFixed(2)}</span>
+                </div>
+            `).join('');
+        });
+    }
+
+    // 8. Hook to reveal Master Admin Button
+    // We add a listener to loadAdminDashboard to ensure the button is shown ONLY for main admin
+    const originalLoadAdminDashboard = loadAdminDashboard;
+    loadAdminDashboard = function() {
+        originalLoadAdminDashboard(); // Call original
+        
+        setTimeout(() => {
+            const btnManage = document.getElementById('btnOpenMasterPanel');
+            if(btnManage) {
+                if(appState.isSubAdmin) {
+                    btnManage.classList.add('hidden'); // Hide for Sub-Admin
+                } else {
+                    btnManage.classList.remove('hidden'); // Show for Master Admin
+                }
+            }
+        }, 200);
+    } 
+
+    
 
     <style>
         .spinner { border-top-color: #3498db; animation: spin 1s linear infinite; }
@@ -2739,6 +3017,9 @@
             .print-this-one div[id^="qr-code-inner-"], .print-this-one #studentPassQR { background-color: white !important; }
             .print-this-one, .print-this-one * { color: #000 !important; background-color: white !important; }
             .print-hide { display: none !important; }
+            /* NEW STYLES FOR SUB-ADMIN FEATURES */
+            .sub-admin-card { border-left: 4px solid #2dd4bf; } /* Teal border */
+            .staff-stat-row { display: flex; justify-content: space-between; padding: 8px; background: #374151; margin-bottom: 4px; border-radius: 4px; }
         }
         /* Helper for formatting event info */
         .event-info-content {
@@ -3146,6 +3427,63 @@
             <p class="font-semibold">Udaya Public School</p>
             <p>Mahadev Jharkhandi, Kunraghat, Gorakhpur</p>
         </footer>
+        <div id="subAdminLoginView" class="hidden">
+    <header class="my-8">
+        <div class="flex items-center space-x-3 mb-4">
+            <div>
+                <h2 class="text-lg font-semibold text-white">Udaya Public School</h2>
+                <p class="text-sm text-gray-400">Event Staff Login</p>
+            </div>
+        </div>
+        <button id="btnSubAdminLoginBack" class="text-blue-400 hover:text-blue-300">&larr; Back to Home</button>
+        <h1 class="text-3xl font-bold text-center text-teal-400 mt-4">Staff Login</h1>
+    </header>
+    <main class="space-y-4 bg-gray-800 p-6 rounded-lg shadow-xl">
+        <div>
+            <label class="block text-sm font-medium text-gray-300 mb-1">Staff ID</label>
+            <input type="text" id="subAdminIdInput" class="w-full bg-gray-700 text-white border border-gray-600 rounded-lg p-3" placeholder="Enter Staff ID">
+        </div>
+        <div>
+            <label class="block text-sm font-medium text-gray-300 mb-1">Password</label>
+            <input type="password" id="subAdminPassInput" class="w-full bg-gray-700 text-white border border-gray-600 rounded-lg p-3" placeholder="••••••••">
+        </div>
+        <button id="btnSubAdminLoginSubmit" class="w-full bg-teal-600 hover:bg-teal-700 text-white font-bold py-3 px-4 rounded-lg shadow-lg transition-all"> Login </button>
+    </main>
+</div>
+
+<div id="masterAdminPanelView" class="hidden fixed inset-0 bg-gray-900 z-40 overflow-y-auto">
+    <div class="container mx-auto p-4 max-w-lg">
+        <header class="my-6 flex justify-between items-center">
+            <h1 class="text-2xl font-bold text-purple-400">Manage Staff</h1>
+            <button id="btnCloseMasterPanel" class="bg-gray-700 hover:bg-gray-600 text-white px-4 py-2 rounded">Close</button>
+        </header>
+
+        <main class="space-y-6">
+            <section class="bg-gray-800 p-6 rounded-lg shadow-xl border border-purple-500">
+                <h2 class="text-xl font-semibold mb-4 text-white">Create New Sub-Admin</h2>
+                <div class="space-y-3">
+                    <input type="text" id="newSubAdminName" class="w-full bg-gray-700 text-white border border-gray-600 rounded p-2" placeholder="Staff Name (e.g. Counter 1)">
+                    <input type="text" id="newSubAdminId" class="w-full bg-gray-700 text-white border border-gray-600 rounded p-2" placeholder="Login ID (e.g. staff01)">
+                    <input type="text" id="newSubAdminPass" class="w-full bg-gray-700 text-white border border-gray-600 rounded p-2" placeholder="Password">
+                    <button id="btnCreateSubAdmin" class="w-full bg-purple-600 hover:bg-purple-700 text-white font-bold py-2 rounded transition-all">Create Account</button>
+                </div>
+            </section>
+
+            <section class="bg-gray-800 p-6 rounded-lg shadow-xl">
+                <h2 class="text-xl font-semibold mb-4 text-white">Existing Staff</h2>
+                <div id="subAdminList" class="space-y-2">
+                    <p class="text-gray-400">Loading staff list...</p>
+                </div>
+            </section>
+             <section class="bg-gray-800 p-6 rounded-lg shadow-xl">
+                <h2 class="text-xl font-semibold mb-4 text-yellow-400">Staff Performance</h2>
+                <div id="subAdminStatsList" class="space-y-2 text-sm">
+                    <p class="text-gray-400">Loading stats...</p>
+                </div>
+            </section>
+        </main>
+    </div>
+</div>
     </div> <!-- End Main Container -->
 </body>
 </html>
