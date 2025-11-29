@@ -380,7 +380,7 @@
 
         async function handleLoginScan(userId, loginType) {
             stopAllScanners();
-            showLoading('Verifying QR Code...');
+            showView('loading'); showLoading('Verifying QR Code...');
             try {
                 const userDoc = await getDoc(doc(usersRef(), userId));
                 if (!userDoc.exists()) throw new Error('Invalid QR Code.');
@@ -1039,7 +1039,16 @@
         function loadAdminReports() {
             currentUnsubscribes.filter(unsub => unsub.name === 'reports-tx-unsub' || unsub.name === 'reports-users-unsub').forEach(unsub => unsub.unsub());
             let allTx = []; let studentMap = new Map();
-            const unsubTx = onSnapshot(query(transactionsRef()), snap => { allTx = snap.docs.map(d=>d.data()); _recalculateAdminReports(allTx, studentMap); });
+            const unsubTx = onSnapshot(query(transactionsRef()), snap => { 
+                allTx = snap.docs.map(d=>d.data()); 
+                // Sort transactions by timestamp descending (newest first)
+                allTx.sort((a, b) => {
+                    const tA = a.timestamp ? a.timestamp.seconds : 0;
+                    const tB = b.timestamp ? b.timestamp.seconds : 0;
+                    return tB - tA;
+                });
+                _recalculateAdminReports(allTx, studentMap); 
+            });
             const unsubUsers = onSnapshot(query(usersRef(), where('role', '==', 'student')), snap => { studentMap = new Map(snap.docs.map(d=>[d.id, d.data().class || 'N/A'])); _recalculateAdminReports(allTx, studentMap); });
             currentUnsubscribes.push({ unsub: unsubTx, name: 'reports-tx-unsub' }, { unsub: unsubUsers, name: 'reports-users-unsub' });
         }
@@ -1072,10 +1081,13 @@
             document.getElementById('adminTransactionList').innerHTML = transactions.map(tx => { 
                 const time = tx.timestamp ? new Date(tx.timestamp.seconds * 1000).toLocaleTimeString() : '...';
                 const itemsStr = tx.items ? tx.items.map(i => `${i.name} (x${i.quantity})`).join(', ') : '';
+                // Add Admin Name check
+                const adminLabel = tx.adminName ? ` <span class="text-xs text-gray-400">(by ${tx.adminName})</span>` : '';
+
                 if (tx.type === 'purchase') return `<div class="bg-gray-700 p-3 rounded-lg"><p class="font-semibold">${tx.studentName} paid ${tx.stallName}</p><p class="text-sm">${itemsStr}</p><div class="flex justify-between items-center mt-1"><span class="text-red-400 font-bold">- ₹${tx.amount.toFixed(2)}</span><span class="text-xs text-gray-400">${time}</span></div></div>`;
-                else if (tx.type === 'recharge') return `<div class="bg-gray-700 p-3 rounded-lg"><p class="font-semibold">${tx.studentName} recharged</p><div class="flex justify-between items-center mt-1"><span class="text-green-400 font-bold">+ ₹${tx.amount.toFixed(2)}</span><span class="text-xs text-gray-400">${time}</span></div></div>`;
-                else if (tx.type === 'cash_out') return `<div class="bg-gray-700 p-3 rounded-lg"><p class="font-semibold">${tx.studentName} cash out</p><div class="flex justify-between items-center mt-1"><span class="text-red-400 font-bold">- ₹${tx.amount.toFixed(2)}</span><span class="text-xs text-gray-400">${time}</span></div></div>`;
-            }).reverse().join('');
+                else if (tx.type === 'recharge') return `<div class="bg-gray-700 p-3 rounded-lg"><p class="font-semibold">${tx.studentName} recharged${adminLabel}</p><div class="flex justify-between items-center mt-1"><span class="text-green-400 font-bold">+ ₹${tx.amount.toFixed(2)}</span><span class="text-xs text-gray-400">${time}</span></div></div>`;
+                else if (tx.type === 'cash_out') return `<div class="bg-gray-700 p-3 rounded-lg"><p class="font-semibold">${tx.studentName} cash out${adminLabel}</p><div class="flex justify-between items-center mt-1"><span class="text-red-400 font-bold">- ₹${tx.amount.toFixed(2)}</span><span class="text-xs text-gray-400">${time}</span></div></div>`;
+            }).join(''); // Removed .reverse() because list is already sorted
             appState.allTransactionsForExport = transactions;
         }
 
@@ -1174,11 +1186,11 @@
 
         function exportTransactionsToCSV() {
             if (appState.allTransactionsForExport.length === 0) return showAlert('No transactions.');
-            let csv = "Date,Time,Type,Student,Amount,Stall,Items\r\n";
+            let csv = "Date,Time,Type,Student,Amount,Stall,Items,Admin\r\n"; // Added Admin
             appState.allTransactionsForExport.forEach(tx => {
                 const dt = tx.timestamp ? new Date(tx.timestamp.seconds * 1000) : new Date();
                 const itemsStr = tx.items ? tx.items.map(i => `${i.name}(x${i.quantity})`).join("|") : 'N/A';
-                csv += [dt.toLocaleDateString(), dt.toLocaleTimeString(), tx.type, `"${tx.studentName}"`, tx.amount.toFixed(2), `"${tx.stallName||'N/A'}"`, `"${itemsStr}"`].join(',') + "\r\n";
+                csv += [dt.toLocaleDateString(), dt.toLocaleTimeString(), tx.type, `"${tx.studentName}"`, tx.amount.toFixed(2), `"${tx.stallName||'N/A'}"`, `"${itemsStr}"`, `"${tx.adminName || ''}"`].join(',') + "\r\n";
             });
             const link = document.createElement("a");
             link.href = encodeURI("data:text/csv;charset=utf-8," + csv);
