@@ -48,7 +48,7 @@
         let adminRechargeQrScanner; // Admin's recharge scanner
         let currentUnsubscribes = []; // To detach listeners on logout
         let appState = {
-            currentUser: null, // { id, name, role ('admin', 'sub_admin', 'student', 'stall'), balance, class, menu }
+            currentUser: null, // { id (username/uid), name, role ('master_admin', 'sub_admin', 'student', 'stall'), balance, class, menu }
             currentView: 'home',
             rechargeAmount: 0, 
             scannedStudentId: null,
@@ -149,6 +149,7 @@
 
         async function initFirebase() {
             try {
+                // IMPORTANT: Use Canvas provided config if available
                 const firebaseConfig = {
                  apiKey: "AIzaSyCsuWEjnrYr1g7ruvZ60ur6TADzbHkJpno",
                  authDomain: "qr-wallet-2ef48.firebaseapp.com",
@@ -386,7 +387,10 @@
                 if (!userDoc.exists()) throw new Error('Invalid QR Code.');
                 const user = userDoc.data();
                 if (user.role !== loginType) throw new Error(`Incorrect QR Code type (${user.role}).`);
-                appState.currentUser = { id: userId, ...user };
+                
+                // For student/stall login, use Firestore ID as the User ID
+                appState.currentUser = { id: userId, ...user }; 
+
                 if (loginType === 'student') loadStudentDashboard();
                 else if (loginType === 'stall') loadStallDashboard();
             } catch (error) {
@@ -419,17 +423,22 @@
                         if (data.adminPassword) masterPassword = data.adminPassword;
                     }
 
-                    // 1. Check legacy/default master admin
+                    // 1. Check master admin
                     if (username === 'admin' && password === masterPassword) {
+                        // FIX: Ensure correct ID/Name is set for master admin
+                        appState.currentUser = { id: username, role: 'master_admin', name: username };
                         loadAdminDashboard('master_admin');
                         return;
                     }
 
-                    // 2. Check admin list from Firestore
+                    // 2. Check sub-admin list from Firestore
                     const matchedAdmin = adminAccounts.find(acc => acc.username === username && acc.password === password);
 
                     if (matchedAdmin) {
-                        loadAdminDashboard(matchedAdmin.role || 'sub_admin'); // 'master_admin' or 'sub_admin'
+                        // FIX: Ensure correct ID/Name is set for sub-admin
+                        const role = matchedAdmin.role || 'sub_admin';
+                        appState.currentUser = { id: matchedAdmin.username, role: role, name: matchedAdmin.username };
+                        loadAdminDashboard(role);
                     } else {
                         throw new Error('Invalid username or password.');
                     }
@@ -737,29 +746,28 @@
         }
 
         // --- UPDATED LOAD ADMIN DASHBOARD ---
-        function loadAdminDashboard(role = 'master_admin') {
+        function loadAdminDashboard(role) {
             showView('adminDashboard');
-            appState.currentUser = { id: 'admin', role: role };
+            // appState.currentUser is now correctly set with the Admin's username in attachAdminLoginListeners
+            // The previous faulty assignment `appState.currentUser = { id: 'admin', role: role };` has been removed.
+            
             updateAdminGlobalConfigUI();
 
             // Handle Role-Based UI
-            const allTabs = document.querySelectorAll('.admin-tab');
             const masterOnlyElements = [
                 document.querySelector('[data-target="panel-stalls"]'),
                 document.querySelector('[data-target="panel-classes"]'),
                 document.querySelector('[data-target="panel-reports"]'),
                 document.querySelector('[data-target="panel-event"]'),
-                document.querySelector('[data-target="panel-admins"]') // New tab
+                document.querySelector('[data-target="panel-admins"]') 
             ];
             
             // Hide all master tabs for sub-admins
             if (role === 'sub_admin') {
                 masterOnlyElements.forEach(el => el.classList.add('hidden'));
-                // Force switch to Students tab
                 document.querySelector('[data-target="panel-students"]').click();
             } else {
                 masterOnlyElements.forEach(el => el.classList.remove('hidden'));
-                // Default to first tab
                 document.querySelector('[data-target="panel-students"]').click();
                 
                 // Load Master-only data
@@ -767,7 +775,7 @@
                 loadAdminReports();
                 loadAdminClasses();
                 loadAdminVotingResults();
-                renderAdminAccountsList(); // New function for master
+                renderAdminAccountsList(); 
             }
 
             // Common Data
@@ -990,12 +998,12 @@
                 listEl.innerHTML = snapshot.docs.map(doc => {
                     const stall = doc.data();
                     return `<div class="bg-gray-700 p-4 rounded-lg">
-                            <div class="flex justify-between items-center mb-2">
-                                <h4 class="text-lg font-semibold">${stall.name}</h4>
-                                <button data-id="${stall.ownerId}" data-name="${stall.name}" class="btn-delete-stall bg-red-600 hover:bg-red-700 text-white px-3 py-1 rounded-lg text-sm">Delete</button>
-                            </div>
-                            <div class="mt-2 space-y-1">${renderMenuList(stall.menu, doc.id, true)}</div>
-                        </div>`;
+                                <div class="flex justify-between items-center mb-2">
+                                    <h4 class="text-lg font-semibold">${stall.name}</h4>
+                                    <button data-id="${stall.ownerId}" data-name="${stall.name}" class="btn-delete-stall bg-red-600 hover:bg-red-700 text-white px-3 py-1 rounded-lg text-sm">Delete</button>
+                                </div>
+                                <div class="mt-2 space-y-1">${renderMenuList(stall.menu, doc.id, true)}</div>
+                            </div>`;
                 }).join('');
                 selectEl.innerHTML = snapshot.docs.map(doc => `<option value="${doc.id}">${doc.data().name}</option>`).join('');
                 document.querySelectorAll('.btn-delete-stall').forEach(btn => btn.onclick = () => showConfirm(`Delete stall "${btn.dataset.name}"?`, () => _deleteStall(btn.dataset.id)));
@@ -1081,13 +1089,13 @@
             document.getElementById('adminTransactionList').innerHTML = transactions.map(tx => { 
                 const time = tx.timestamp ? new Date(tx.timestamp.seconds * 1000).toLocaleTimeString() : '...';
                 const itemsStr = tx.items ? tx.items.map(i => `${i.name} (x${i.quantity})`).join(', ') : '';
-                // Add Admin Name check
+                // Added Admin Name check
                 const adminLabel = tx.adminName ? ` <span class="text-xs text-gray-400">(by ${tx.adminName})</span>` : '';
 
                 if (tx.type === 'purchase') return `<div class="bg-gray-700 p-3 rounded-lg"><p class="font-semibold">${tx.studentName} paid ${tx.stallName}</p><p class="text-sm">${itemsStr}</p><div class="flex justify-between items-center mt-1"><span class="text-red-400 font-bold">- ₹${tx.amount.toFixed(2)}</span><span class="text-xs text-gray-400">${time}</span></div></div>`;
                 else if (tx.type === 'recharge') return `<div class="bg-gray-700 p-3 rounded-lg"><p class="font-semibold">${tx.studentName} recharged${adminLabel}</p><div class="flex justify-between items-center mt-1"><span class="text-green-400 font-bold">+ ₹${tx.amount.toFixed(2)}</span><span class="text-xs text-gray-400">${time}</span></div></div>`;
                 else if (tx.type === 'cash_out') return `<div class="bg-gray-700 p-3 rounded-lg"><p class="font-semibold">${tx.studentName} cash out${adminLabel}</p><div class="flex justify-between items-center mt-1"><span class="text-red-400 font-bold">- ₹${tx.amount.toFixed(2)}</span><span class="text-xs text-gray-400">${time}</span></div></div>`;
-            }).join(''); // Removed .reverse() because list is already sorted
+            }).join(''); 
             appState.allTransactionsForExport = transactions;
         }
 
@@ -1173,23 +1181,25 @@
             showLoading("Saving...");
             try {
                  await runTransaction(db, async (tx) => {
-                    const docSnap = await tx.get(votingConfigRef());
-                    const cats = docSnap.data().categories;
-                    const idx = cats.findIndex(c => c.id === id);
-                    if(idx===-1) throw new Error("Category missing.");
-                    cats[idx].options = options;
-                    tx.update(votingConfigRef(), { categories: cats });
-                });
+                     const docSnap = await tx.get(votingConfigRef());
+                     const cats = docSnap.data().categories;
+                     const idx = cats.findIndex(c => c.id === id);
+                     if(idx===-1) throw new Error("Category missing.");
+                     cats[idx].options = options;
+                     tx.update(votingConfigRef(), { categories: cats });
+                 });
                 document.getElementById('editVotingOptionsModal').classList.add('hidden'); showAlert("Saved.");
             } catch(e) { showAlert(e.message); } finally { hideLoading(); }
         }
 
         function exportTransactionsToCSV() {
             if (appState.allTransactionsForExport.length === 0) return showAlert('No transactions.');
-            let csv = "Date,Time,Type,Student,Amount,Stall,Items,Admin\r\n"; // Added Admin
+            // CSV Header updated to include Admin
+            let csv = "Date,Time,Type,Student,Amount,Stall,Items,Admin\r\n"; 
             appState.allTransactionsForExport.forEach(tx => {
                 const dt = tx.timestamp ? new Date(tx.timestamp.seconds * 1000) : new Date();
                 const itemsStr = tx.items ? tx.items.map(i => `${i.name}(x${i.quantity})`).join("|") : 'N/A';
+                // Data line updated to include tx.adminName
                 csv += [dt.toLocaleDateString(), dt.toLocaleTimeString(), tx.type, `"${tx.studentName}"`, tx.amount.toFixed(2), `"${tx.stallName||'N/A'}"`, `"${itemsStr}"`, `"${tx.adminName || ''}"`].join(',') + "\r\n";
             });
             const link = document.createElement("a");
@@ -1427,6 +1437,7 @@
                      const d = await tx.get(ref);
                      if(sign === -1 && d.data().balance < amt) throw new Error("Low balance.");
                      tx.update(ref, { balance: increment(amt * sign) });
+                     // Admin Name is correctly set here from appState.currentUser.id (which is the logged-in username)
                      tx.set(doc(transactionsRef()), { studentId: appState.scannedStudentId, studentName: appState.scannedStudentName, amount: amt, type, adminName: appState.currentUser.id, timestamp: serverTimestamp() });
                  });
                  showAlert("Done!"); loadAdminDashboard(appState.currentUser.role);
@@ -1456,10 +1467,13 @@
             csvText.split('\n').forEach(line => {
                 const trimmed = line.trim();
                 const lastComma = trimmed.lastIndexOf(',');
-                if (lastComma > -1) {
-                    const name = trimmed.substring(0, lastComma).trim();
-                    const className = trimmed.substring(lastComma + 1).trim();
-                    if (name && className && name.toLowerCase() !== "name") students.push({ name, class: className });
+                const headerCheck = trimmed.toLowerCase();
+                if(headerCheck.startsWith("name") || headerCheck.startsWith("student")) return; // Skip header row
+                const lastCommaIndex = trimmed.lastIndexOf(',');
+                if (lastCommaIndex > -1) {
+                    const name = trimmed.substring(0, lastCommaIndex).trim();
+                    const className = trimmed.substring(lastCommaIndex + 1).trim();
+                    if (name && className) students.push({ name, class: className });
                 }
             });
             return students;
@@ -1471,8 +1485,8 @@
             const reader = new FileReader();
             reader.onload = async (e) => {
                 const students = parseCSV(e.target.result);
-                if (students.length === 0) { hideLoading(); return showAlert("No valid data."); }
-                showLoading(`Importing ${students.length}...`);
+                if (students.length === 0) { hideLoading(); return showAlert("No valid data found in CSV. Expected format: Name,Class"); }
+                showLoading(`Importing ${students.length} students...`);
                 const res = await processBulkImport(students);
                 hideLoading();
                 showAlert(`Done: ${res.success} success, ${res.failed} failed.`);
@@ -1592,7 +1606,7 @@
 
         <!-- VIEW: Stall Payment --><div id="stallPaymentView" class="hidden"> <header class="my-8"> <h1 class="text-3xl font-bold text-center text-blue-400">Payment</h1> </header> <main class="space-y-6"> <div id="stall-qr-reader-container"> <p class="text-center text-lg text-yellow-300 mb-4">Scanning...</p> <div id="stall-qr-reader" class="w-full rounded-lg overflow-hidden border-4 border-gray-700"></div> </div> <div id="stallPaymentDetails" class="hidden space-y-6"> <section class="bg-gray-800 p-6 rounded-lg shadow-xl"> <h2 class="text-2xl font-semibold mb-2">Student</h2> <div class="flex justify-between items-center"> <span id="stallPaymentStudentName" class="text-xl"></span> <span id="stallPaymentStudentBalance" class="text-xl font-bold text-green-400"></span> </div> </section> <section class="bg-gray-800 p-6 rounded-lg shadow-xl"> <h2 class="text-2xl font-semibold mb-4">Order</h2> <div id="stallCart" class="space-y-4"> </div> </section> <section class="text-center"> <p class="text-lg text-gray-300">Total:</p> <p id="stallCartTotal" class="text-6xl font-extrabold text-green-400">₹0.00</p> </section> </div> <button id="btnStallConfirmPayment" class="hidden w-full bg-green-600 hover:bg-green-700 text-white font-bold py-4 px-6 rounded-lg shadow-lg text-lg transition-all"> Confirm </button> <button id="btnStallPaymentCancel" class="w-full bg-gray-700 hover:bg-gray-600 text-white font-bold py-3 px-4 rounded-lg shadow-lg transition-all"> Cancel </button> </main> </div>
 
-        <!-- VIEW: Admin Recharge --><div id="adminRechargeView" class="hidden"> <header class="my-8"> <h1 class="text-3xl font-bold text-center text-green-400">Recharge / Cash Out</h1> </header> <main class="space-y-6"> <div id="admin-recharge-qr-reader-container"> <p class="text-center text-lg text-yellow-300 mb-4">Scanning...</p> <div id="admin-recharge-qr-reader" class="w-full rounded-lg overflow-hidden border-4 border-gray-700"></div> </div> <div id="adminRechargeDetails" class="hidden space-y-6"> <section class="bg-gray-800 p-6 rounded-lg shadow-xl"> <h2 class="text-2xl font-semibold mb-2">Student</h2> <div class="flex justify-between items-center"> <span id="adminRechargeStudentName" class="text-xl"></span> <span id="adminRechargeStudentBalance" class="text-xl font-bold text-green-400"></span> </div> </section> <section class="bg-gray-800 p-6 rounded-lg shadow-xl"> <h2 class="text-2xl font-semibold mb-4">Amount</h2> <input type="number" id="adminRechargeAmount" class="w-full bg-gray-700 text-white border border-gray-600 rounded-lg p-3 text-2xl" placeholder="500"> </section> </div> <div class="space-y-4"> <button id="btnAdminConfirmRecharge" class="hidden w-full bg-green-600 hover:bg-green-700 text-white font-bold py-4 px-6 rounded-lg shadow-lg text-lg transition-all"> Recharge </button> <button id="btnAdminConfirmCashOut" class="hidden w-full bg-red-600 hover:bg-red-700 text-white font-bold py-4 px-6 rounded-lg shadow-lg text-lg transition-all"> Cash Out </button> <button id="btnAdminRechargeCancel" class="w-full bg-gray-700 hover:bg-gray-600 text-white font-bold py-3 px-4 rounded-lg shadow-lg transition-all"> Cancel </button> </div> </div>
+        <!-- VIEW: Admin Recharge --><div id="adminRechargeView" class="hidden"> <header class="my-8"> <h1 class="text-3xl font-bold text-center text-green-400">Recharge / Cash Out</h1> </header> <main class="space-y-6"> <div id="admin-recharge-qr-reader-container"> <p class="text-center text-lg text-yellow-300 mb-4">Scanning...</p> <div id="admin-recharge-qr-reader" class="w-full rounded-lg overflow-hidden border-4 border-gray-700"></div> </div> <div id="adminRechargeDetails" class="hidden space-y-6"> <section class="bg-gray-800 p-6 rounded-lg shadow-xl"> <h2 class="text-2xl font-semibold mb-2">Student</h2> <div class="flex justify-between items-center"> <span id="adminRechargeStudentName" class="text-xl"></span> <span id="adminRechargeStudentBalance" class="text-xl font-bold text-green-400"></span> </div> </section> <section class="bg-gray-800 p-6 rounded-lg shadow-xl"> <h2 class="text-2xl font-semibold mb-4">Amount</h2> <input type="number" id="adminRechargeAmount" class="w-full bg-gray-700 text-white border border-gray-600 rounded-lg p-3 text-2xl" placeholder="500"> </section> </div> <div class="space-y-4"> <button id="btnAdminConfirmRecharge" class="hidden w-full bg-green-600 hover:bg-green-700 text-white font-bold py-4 px-6 rounded-lg shadow-lg text-lg transition-all"> Recharge </button> <button id="btnAdminConfirmCashOut" class="hidden w-full bg-red-600 hover:bg-red-700 text-white font-bold py-4 px-6 rounded-lg shadow-lg text-lg transition-all"> Cash Out </button> <button id="btnAdminRechargeCancel" class="w-full bg-gray-700 hover:bg-gray-600 text-white font-bold py-3 px-4 rounded-lg shadow-lg transition-all"> Cancel </button> </div> </main> </div>
 
         <!-- Overlays -->
         <div id="loadingView" class="hidden fixed inset-0 bg-black bg-opacity-75 flex flex-col items-center justify-center z-50"> <div class="spinner w-16 h-16 border-4 border-gray-600 rounded-full"></div> <p id="loadingMessage" class="text-white text-xl mt-4">Loading...</p> </div>
@@ -1602,7 +1616,7 @@
         <!-- Edit Modals -->
         <div id="editItemModal" class="hidden fixed inset-0 bg-black bg-opacity-75 flex items-center justify-center z-50 p-4"> <div class="bg-white text-black p-6 rounded-lg shadow-xl max-w-sm w-full"> <h3 class="text-xl font-semibold mb-4">Edit Item</h3> <div class="space-y-4"> <div> <label class="block text-sm">Name</label> <input type="text" id="editItemNameInput" class="w-full bg-gray-100 text-black border rounded p-3"> </div> <div> <label class="block text-sm">Price</label> <input type="number" id="editItemPriceInput" class="w-full bg-gray-100 text-black border rounded p-3"> </div> <input type="hidden" id="editItemId"> <input type="hidden" id="editItemStallId"> </div> <div class="flex space-x-4 mt-6"> <button id="btnCancelItemEdit" class="w-full bg-gray-600 text-white font-bold py-2 px-4 rounded">Cancel</button> <button id="btnSaveItemChanges" class="w-full bg-blue-600 text-white font-bold py-2 px-4 rounded">Save</button> </div> </div> </div>
         <div id="editVotingOptionsModal" class="hidden fixed inset-0 bg-black bg-opacity-75 flex items-center justify-center z-50 p-4"> <div class="bg-white text-black p-6 rounded-lg shadow-xl max-w-sm w-full"> <h3 class="text-xl font-semibold mb-4">Edit Options: <span id="editVotingCategoryTitleDisplay" class="text-blue-600"></span></h3> <div class="space-y-4"> <label class="block text-sm">Options</label> <textarea id="editVotingOptionsInput" rows="6" class="w-full bg-gray-100 text-black border rounded p-3"></textarea> <input type="hidden" id="editVotingCategoryId"> </div> <div class="flex space-x-4 mt-6"> <button id="btnCancelVotingEdit" class="w-full bg-gray-600 text-white font-bold py-2 px-4 rounded">Cancel</button> <button id="btnSaveVotingOptions" class="w-full bg-blue-600 text-white font-bold py-2 px-4 rounded">Save</button> </div> </div> </div>
-   
+    
         <!-- Global Footer -->
         <footer class="text-center w-full mt-12 mb-4 text-gray-500 text-xs">
             <!-- NEW: Attribution Block (Moved from homeView) -->
