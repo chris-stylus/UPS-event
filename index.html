@@ -48,24 +48,24 @@
         let adminRechargeQrScanner; // Admin's recharge scanner
         let currentUnsubscribes = []; // To detach listeners on logout
         let appState = {
-            currentUser: null, // { id (username/uid), name, role ('master_admin', 'sub_admin', 'student', 'stall'), balance, class, menu }
+            currentUser: null, // { id, name, role, balance, balance_food, balance_games, balance_product, category... }
             currentView: 'home',
-            rechargeAmount: 0, 
+            rechargeAmount: 0,
             scannedStudentId: null,
             scannedStudentName: null,
-            stallCart: {}, 
+            stallCart: {},
             allTransactionsForExport: [],
-            allStallMenus: {}, 
-            currentClassStudentList: [], 
+            allStallMenus: {},
+            currentClassStudentList: [],
             eventInfo: "Welcome to the event! Details will be posted here.",
-            votingConfig: [], 
+            votingConfig: [],
             allStallsForExport: [],
             globalConfig: {
                 schoolName: 'Udaya Public School',
                 schoolAddress: 'Mahadev Jharkhandi, Kunraghat, Gorakhpur',
                 eventName: 'ANNUAL FEST 2025-26',
                 eventDate: '1-FEB-2026',
-                adminAccounts: [] // [{username, password, role}]
+                adminAccounts: []
             }
         };
         let modal, modalMessage, modalButton;
@@ -86,8 +86,8 @@
         const eventInfoRef = () => doc(db, 'artifacts', appId, 'public', 'data', 'eventConfig', 'info');
         const votesRef = () => collection(db, 'artifacts', appId, 'public', 'data', 'votes');
         const votingConfigRef = () => doc(db, 'artifacts', appId, 'public', 'data', 'eventConfig', 'voting');
-        
-        let studentVotesCache = {}; 
+       
+        let studentVotesCache = {};
 
         document.addEventListener('DOMContentLoaded', () => {
             setupDOMCache();
@@ -136,20 +136,18 @@
             if (btnConfirmYes) btnConfirmYes.onclick = () => { if (confirmCallback) confirmCallback(); confirmCallback = null; confirmModal?.classList.add('hidden'); };
             if (btnCancelItemEdit) btnCancelItemEdit.onclick = () => editItemModal?.classList.add('hidden');
             if (btnSaveItemChanges) btnSaveItemChanges.onclick = handleSaveItemChanges;
-            
+           
             const btnCancelVotingEdit = document.getElementById('btnCancelVotingEdit');
             const btnSaveVotingOptions = document.getElementById('btnSaveVotingOptions');
             if(btnCancelVotingEdit) btnCancelVotingEdit.onclick = () => document.getElementById('editVotingOptionsModal')?.classList.add('hidden');
             if(btnSaveVotingOptions) btnSaveVotingOptions.onclick = handleSaveVotingOptions;
 
-            // NEW: Add Admin Listeners
             const btnAddSubAdmin = document.getElementById('btnAddSubAdmin');
             if(btnAddSubAdmin) btnAddSubAdmin.onclick = createSubAdmin;
         }
 
         async function initFirebase() {
             try {
-                // IMPORTANT: Use Canvas provided config if available
                 const firebaseConfig = {
                  apiKey: "AIzaSyCsuWEjnrYr1g7ruvZ60ur6TADzbHkJpno",
                  authDomain: "qr-wallet-2ef48.firebaseapp.com",
@@ -216,9 +214,10 @@
                     const stallData = doc.data();
                     appState.allStallMenus[doc.id] = {
                         name: stallData.name,
-                        menu: stallData.menu || []
+                        menu: stallData.menu || [],
+                        category: stallData.category || 'general'
                     };
-                    appState.allStallsForExport.push({ id: doc.id, name: stallData.name, role: 'stall' });
+                    appState.allStallsForExport.push({ id: doc.id, name: stallData.name, role: 'stall', category: stallData.category });
                 });
                 if (appState.currentView === 'adminDashboard') updateAdminStallBulkDownloadButton();
                 if (appState.currentUser && appState.currentUser.role === 'student' && appState.currentView === 'studentDashboard') loadStudentStallList();
@@ -232,12 +231,12 @@
                     appState.globalConfig = {
                         ...appState.globalConfig,
                         ...data,
-                        adminAccounts: data.adminAccounts || [] // Ensure array exists
+                        adminAccounts: data.adminAccounts || []
                     };
                 }
                 if (appState.currentView === 'adminDashboard') {
                     updateAdminGlobalConfigUI();
-                    renderAdminAccountsList(); // Refresh admin list
+                    renderAdminAccountsList();
                 }
                 updateGlobalTextUI();
             });
@@ -277,7 +276,7 @@
                 else if (appState.currentView === 'adminDashboard') document.getElementById('adminEventInfoTextarea').value = content;
             });
         }
-        
+       
         function loadVotingConfig() {
             onSnapshot(votingConfigRef(), (docSnap) => {
                 let config = [];
@@ -289,7 +288,7 @@
                 renderVotingCategories(document.getElementById('votingCategoriesList'));
             });
         }
-        
+       
         function formatEventInfo(text) {
            let escapedText = text.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
            return escapedText.replace(/\n/g, '<br>');
@@ -319,7 +318,7 @@
                 modal.classList.remove('hidden');
             }
         }
-        
+       
         function showConfirm(message, onYesCallback) {
              if (confirmModalMessage && confirmModal) {
                 confirmModalMessage.textContent = message;
@@ -343,7 +342,7 @@
                 } catch (e) {}
             });
         }
-        
+       
         function escapeHTML(str) {
             if (typeof str !== 'string') return '';
             return str.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;').replace(/'/g, '&#039;');
@@ -370,7 +369,7 @@
             showView('scanner');
             document.getElementById('scannerTitle').textContent = `Scan ${loginType.charAt(0).toUpperCase() + loginType.slice(1)} QR Code`;
             if (!html5QrCode) html5QrCode = new Html5Qrcode("qr-reader");
-            
+           
             html5QrCode.start({ facingMode: "environment" }, { fps: 10, qrbox: { width: 250, height: 250 } }, (decodedText) => handleLoginScan(decodedText, loginType))
                 .catch(err => {
                     console.error("Scanner start error:", err);
@@ -387,12 +386,19 @@
                 if (!userDoc.exists()) throw new Error('Invalid QR Code.');
                 const user = userDoc.data();
                 if (user.role !== loginType) throw new Error(`Incorrect QR Code type (${user.role}).`);
-                
-                // For student/stall login, use Firestore ID as the User ID
-                appState.currentUser = { id: userId, ...user }; 
-
-                if (loginType === 'student') loadStudentDashboard();
-                else if (loginType === 'stall') loadStallDashboard();
+               
+                appState.currentUser = { id: userId, ...user };
+               
+                // If stall, fetch category from stalls collection too
+                if (loginType === 'stall') {
+                    const stallDoc = await getDoc(doc(stallsRef(), userId));
+                    if (stallDoc.exists()) {
+                        appState.currentUser.category = stallDoc.data().category || 'general';
+                    }
+                    loadStallDashboard();
+                } else if (loginType === 'student') {
+                    loadStudentDashboard();
+                }
             } catch (error) {
                 showAlert(error.message);
                 showView('home');
@@ -415,7 +421,7 @@
                 try {
                     const configSnap = await getDoc(configRef());
                     let adminAccounts = [];
-                    let masterPassword = 'nhibatunga'; 
+                    let masterPassword = 'nhibatunga';
 
                     if (configSnap.exists()) {
                         const data = configSnap.data();
@@ -423,19 +429,15 @@
                         if (data.adminPassword) masterPassword = data.adminPassword;
                     }
 
-                    // 1. Check master admin
                     if (username === 'admin' && password === masterPassword) {
-                        // FIX: Ensure correct ID/Name is set for master admin
                         appState.currentUser = { id: username, role: 'master_admin', name: username };
                         loadAdminDashboard('master_admin');
                         return;
                     }
 
-                    // 2. Check sub-admin list from Firestore
                     const matchedAdmin = adminAccounts.find(acc => acc.username === username && acc.password === password);
 
                     if (matchedAdmin) {
-                        // FIX: Ensure correct ID/Name is set for sub-admin
                         const role = matchedAdmin.role || 'sub_admin';
                         appState.currentUser = { id: matchedAdmin.username, role: role, name: matchedAdmin.username };
                         loadAdminDashboard(role);
@@ -453,27 +455,27 @@
 
         function refreshAdminData() {
             showLoading('Refreshing all admin data...');
-            loadAdminStudents(); 
+            loadAdminStudents();
             if(appState.currentUser.role === 'master_admin') {
-                loadAdminStallsAndMenus(); 
-                loadAdminReports(); 
+                loadAdminStallsAndMenus();
+                loadAdminReports();
                 loadAdminClasses();
                 loadAdminVotingResults();
             }
             loadEventInfo();
             loadGlobalConfig();
-            setTimeout(hideLoading, 500); 
+            setTimeout(hideLoading, 500);
         }
 
         function refreshStudentData() {
             showLoading('Refreshing student data...');
-            loadStudentDashboard(); 
+            loadStudentDashboard();
             setTimeout(hideLoading, 500);
         }
 
         function refreshStallData() {
             showLoading('Refreshing stall data...');
-            loadStallDashboard(); 
+            loadStallDashboard();
             setTimeout(hideLoading, 500);
         }
 
@@ -500,12 +502,12 @@
             document.getElementById('adminSearchClassSelect').onchange = handleClassFilterChange;
             document.getElementById('btnDownloadAllPasses').onclick = generateClassPDF;
             document.getElementById('btnAdminSearchStudent').onclick = searchStudentByName;
-            
+           
             document.getElementById('btnAdminGenerateStall').onclick = () => generateUser('stall');
             document.getElementById('btnAdminAddMenuItem').onclick = addMenuItem;
             document.getElementById('btnAdminSearchStall').onclick = searchStall;
             document.getElementById('btnDownloadAllStallPasses').onclick = () => generateBulkQRPasses(appState.allStallsForExport, 'stall');
-            
+           
             document.getElementById('btnAdminAddClass').onclick = addAdminClass;
             document.getElementById('btnExportCSV').onclick = exportTransactionsToCSV;
             document.getElementById('btnAdminRefreshReports').onclick = () => loadAdminReports();
@@ -555,8 +557,8 @@
             const isAdmin = appState.currentUser && (appState.currentUser.role === 'admin' || appState.currentUser.role === 'master_admin' || appState.currentUser.role === 'sub_admin');
             const isStall = user.role === 'stall';
             const passTitle = isStall ? 'STALL QR PASS' : 'ENTRY PASS';
-            const typeDetail = isStall ? `Stall Name: ${user.name}` : `Class: ${user.class || 'N/A'}`;
-            const config = appState.globalConfig; 
+            const typeDetail = isStall ? `Stall Name: ${user.name} (${user.category || 'General'})` : `Class: ${user.class || 'N/A'}`;
+            const config = appState.globalConfig;
 
             containerElement.innerHTML = `
                 <div id="${passId}" class="printable-area bg-white text-black p-6 rounded-lg shadow-lg max-w-xs mx-auto border-4 ${isStall ? 'border-green-600' : 'border-blue-600'}">
@@ -584,7 +586,7 @@
             `;
             new QRCode(document.getElementById(qrInnerId), { text: user.id, width: 200, height: 200, correctLevel: QRCode.CorrectLevel.H });
         }
-        
+       
         window.printPass = function(elementId) {
              const passElement = document.getElementById(elementId);
             if (passElement) {
@@ -612,7 +614,7 @@
             const qrContainer = document.getElementById('adminSearchQRContainer');
             const btnDownloadAll = document.getElementById('btnDownloadAllPasses');
             studentListEl.innerHTML = ''; qrContainer.innerHTML = ''; qrContainer.classList.add('hidden'); btnDownloadAll.classList.add('hidden');
-            appState.currentClassStudentList = []; 
+            appState.currentClassStudentList = [];
             if (!className) return;
 
             showLoading('Fetching students...');
@@ -642,9 +644,9 @@
         function getPassHtml(user, qrId) {
             const isStall = user.role === 'stall';
             const passTitle = isStall ? 'STALL QR PASS' : 'ENTRY PASS';
-            const typeDetail = isStall ? `Stall Name: ${user.name}` : `Class: ${user.class || 'N/A'}`;
-            const borderColor = isStall ? '#10B981' : '#2563EB'; 
-            const config = appState.globalConfig; 
+            const typeDetail = isStall ? `Stall Name: ${user.name} (${user.category||'General'})` : `Class: ${user.class || 'N/A'}`;
+            const borderColor = isStall ? '#10B981' : '#2563EB';
+            const config = appState.globalConfig;
             return `<div class="printable-area bg-white text-black p-6 rounded-lg shadow-lg border-4" style="width: 350px; height: auto; box-sizing: border-box; border-color: ${borderColor};">
                     <div class="text-center border-b pb-4 border-gray-300">
                         <h3 class="text-xl font-bold text-gray-800" style="font-size: 1.25rem; line-height: 1.75rem;">${config.schoolName}</h3>
@@ -672,7 +674,7 @@
             showLoading(`Generating PDF...`);
 
             const { jsPDF } = window.jspdf;
-            const doc = new jsPDF('portrait', 'mm', 'a4'); 
+            const doc = new jsPDF('portrait', 'mm', 'a4');
             let renderContainer = document.getElementById('pdf-render-container');
             if (!renderContainer) {
                 renderContainer = document.createElement('div');
@@ -686,14 +688,14 @@
             let userCounter = 0;
 
             for (const user of users) {
-                const passIndex = userCounter % 6; 
+                const passIndex = userCounter % 6;
                 const { x, y } = positions[passIndex];
                 if (userCounter > 0 && passIndex === 0) doc.addPage();
                 showLoading(`Generating... (${userCounter + 1} / ${users.length})`);
                 const qrId = `pdf-qr-${user.id}`;
                 renderContainer.innerHTML = getPassHtml({ ...user, role: user.role || userType.split('_')[0] }, qrId);
                 new QRCode(document.getElementById(qrId), { text: user.id, width: 200, height: 200, correctLevel: QRCode.CorrectLevel.H });
-                await new Promise(resolve => setTimeout(resolve, 150)); 
+                await new Promise(resolve => setTimeout(resolve, 150));
 
                 try {
                     const canvas = await html2canvas(renderContainer.firstElementChild, { scale: 2, useCORS: true, logging: false });
@@ -749,8 +751,7 @@
         function loadAdminDashboard(role) {
             showView('adminDashboard');
             // appState.currentUser is now correctly set with the Admin's username in attachAdminLoginListeners
-            // The previous faulty assignment `appState.currentUser = { id: 'admin', role: role };` has been removed.
-            
+           
             updateAdminGlobalConfigUI();
 
             // Handle Role-Based UI
@@ -759,9 +760,9 @@
                 document.querySelector('[data-target="panel-classes"]'),
                 document.querySelector('[data-target="panel-reports"]'),
                 document.querySelector('[data-target="panel-event"]'),
-                document.querySelector('[data-target="panel-admins"]') 
+                document.querySelector('[data-target="panel-admins"]')
             ];
-            
+           
             // Hide all master tabs for sub-admins
             if (role === 'sub_admin') {
                 masterOnlyElements.forEach(el => el.classList.add('hidden'));
@@ -769,13 +770,13 @@
             } else {
                 masterOnlyElements.forEach(el => el.classList.remove('hidden'));
                 document.querySelector('[data-target="panel-students"]').click();
-                
+               
                 // Load Master-only data
                 loadAdminStallsAndMenus();
                 loadAdminReports();
                 loadAdminClasses();
                 loadAdminVotingResults();
-                renderAdminAccountsList(); 
+                renderAdminAccountsList();
             }
 
             // Common Data
@@ -806,7 +807,7 @@
 
                 accounts.push({ username, password, role: 'sub_admin' });
                 await setDoc(configRef(), { adminAccounts: accounts }, { merge: true });
-                
+               
                 userIn.value = ''; passIn.value = '';
                 showAlert("Sub-Admin created!");
             } catch (e) {
@@ -830,7 +831,7 @@
             const listEl = document.getElementById('adminAccountsList');
             if(!listEl) return;
             const accounts = appState.globalConfig.adminAccounts || [];
-            
+           
             if (accounts.length === 0) {
                 listEl.innerHTML = '<p class="text-gray-400">No sub-admins created.</p>';
                 return;
@@ -857,20 +858,39 @@
             const qrContainer = document.getElementById(role === 'student' ? 'adminStudentQRContainer' : 'adminStallQRContainer');
             const name = nameInput.value;
             let studentClass = null;
+            let stallCategory = 'general';
+
             if (role === 'student') {
                 const classSelect = document.getElementById('adminStudentClassSelect');
                 studentClass = classSelect.value;
                 if (!studentClass) return showAlert('Please select student class.');
+            } else if (role === 'stall') {
+                const catSelect = document.getElementById('adminStallCategory');
+                stallCategory = catSelect.value || 'general';
             }
+
             if (!name) return showAlert(`Please enter ${role} name.`);
             showLoading(`Generating ${role}...`);
             try {
-                const newUser = { name, role, balance: role === 'student' ? 0 : null, class: studentClass, createdAt: serverTimestamp() };
+                // Initialize multiple balances for student
+                const newUser = {
+                    name,
+                    role,
+                    balance: role === 'student' ? 0 : null,
+                    balance_food: role === 'student' ? 0 : null,
+                    balance_games: role === 'student' ? 0 : null,
+                    balance_product: role === 'student' ? 0 : null,
+                    class: studentClass,
+                    createdAt: serverTimestamp()
+                };
+               
                 const newDocRef = await addDoc(usersRef(), newUser);
                 const finalUserId = newDocRef.id;
                 await updateDoc(newDocRef, { userId: finalUserId });
-                if (role === 'stall') await setDoc(doc(stallsRef(), finalUserId), { name, ownerId: finalUserId, menu: [] });
-                displayUserQR(qrContainer, { id: finalUserId, name, class: studentClass, role });
+               
+                if (role === 'stall') await setDoc(doc(stallsRef(), finalUserId), { name, ownerId: finalUserId, menu: [], category: stallCategory });
+               
+                displayUserQR(qrContainer, { id: finalUserId, name, class: studentClass, role, category: stallCategory });
                 nameInput.value = '';
                 if (role === 'student') document.getElementById('adminStudentClassSelect').value = '';
                 showAlert(`${role} created!`);
@@ -913,13 +933,13 @@
             const q = query(usersRef(), where('role', '==', 'student'));
             const unsub = onSnapshot(q, (snapshot) => {
                 const listEl = document.getElementById('adminStudentList');
-                listEl.innerHTML = snapshot.empty ? '<p>No students.</p>' : snapshot.docs.map(d => `<div class="bg-gray-700 p-3 rounded-lg flex justify-between items-center"><div><span>${d.data().name} (${d.data().class||'N/A'})</span><span class="text-green-400 block text-sm">₹${d.data().balance.toFixed(2)}</span></div><button data-id="${d.id}" data-name="${d.data().name}" class="btn-delete-student bg-red-600 hover:bg-red-700 text-white px-3 py-1 rounded-lg text-sm">Delete</button></div>`).join('');
+                listEl.innerHTML = snapshot.empty ? '<p>No students.</p>' : snapshot.docs.map(d => `<div class="bg-gray-700 p-3 rounded-lg flex justify-between items-center"><div><span>${d.data().name} (${d.data().class||'N/A'})</span><span class="text-green-400 block text-sm">Main: ₹${d.data().balance.toFixed(2)} | Food: ₹${(d.data().balance_food||0).toFixed(2)}</span></div><button data-id="${d.id}" data-name="${d.data().name}" class="btn-delete-student bg-red-600 hover:bg-red-700 text-white px-3 py-1 rounded-lg text-sm">Delete</button></div>`).join('');
                 document.querySelectorAll('.btn-delete-student').forEach(btn => {
                     const studentId = btn.dataset.id;
                     const studentName = btn.dataset.name;
                     btn.onclick = () => showConfirm(`Delete "${studentName}"?`, () => _deleteStudent(studentId));
                 });
-            }); 
+            });
             currentUnsubscribes.push(unsub);
         }
 
@@ -999,7 +1019,7 @@
                     const stall = doc.data();
                     return `<div class="bg-gray-700 p-4 rounded-lg">
                                 <div class="flex justify-between items-center mb-2">
-                                    <h4 class="text-lg font-semibold">${stall.name}</h4>
+                                    <h4 class="text-lg font-semibold">${stall.name} <span class="text-xs text-yellow-400 border border-yellow-400 rounded px-1 ml-2">${stall.category || 'General'}</span></h4>
                                     <button data-id="${stall.ownerId}" data-name="${stall.name}" class="btn-delete-stall bg-red-600 hover:bg-red-700 text-white px-3 py-1 rounded-lg text-sm">Delete</button>
                                 </div>
                                 <div class="mt-2 space-y-1">${renderMenuList(stall.menu, doc.id, true)}</div>
@@ -1047,22 +1067,22 @@
         function loadAdminReports() {
             currentUnsubscribes.filter(unsub => unsub.name === 'reports-tx-unsub' || unsub.name === 'reports-users-unsub').forEach(unsub => unsub.unsub());
             let allTx = []; let studentMap = new Map();
-            const unsubTx = onSnapshot(query(transactionsRef()), snap => { 
-                allTx = snap.docs.map(d=>d.data()); 
+            const unsubTx = onSnapshot(query(transactionsRef()), snap => {
+                allTx = snap.docs.map(d=>d.data());
                 // Sort transactions by timestamp descending (newest first)
                 allTx.sort((a, b) => {
                     const tA = a.timestamp ? a.timestamp.seconds : 0;
                     const tB = b.timestamp ? b.timestamp.seconds : 0;
                     return tB - tA;
                 });
-                _recalculateAdminReports(allTx, studentMap); 
+                _recalculateAdminReports(allTx, studentMap);
             });
             const unsubUsers = onSnapshot(query(usersRef(), where('role', '==', 'student')), snap => { studentMap = new Map(snap.docs.map(d=>[d.id, d.data().class || 'N/A'])); _recalculateAdminReports(allTx, studentMap); });
             currentUnsubscribes.push({ unsub: unsubTx, name: 'reports-tx-unsub' }, { unsub: unsubUsers, name: 'reports-users-unsub' });
         }
 
         function _recalculateAdminReports(transactions, studentClassMap) {
-            let totalSales = 0, totalRecharged = 0, totalRefunded = 0, purchaseCount = 0; 
+            let totalSales = 0, totalRecharged = 0, totalRefunded = 0, purchaseCount = 0;
             const stallSales = {}, topItems = {}, classSpending = {};
             transactions.forEach(tx => {
                 if (tx.type === 'purchase') {
@@ -1071,7 +1091,7 @@
                     if (tx.items) tx.items.forEach(item => topItems[item.name] = (topItems[item.name] || 0) + item.quantity);
                     const studentClass = studentClassMap.get(tx.studentId) || 'N/A';
                     classSpending[studentClass] = (classSpending[studentClass] || 0) + tx.amount;
-                } else if (tx.type === 'recharge') totalRecharged += tx.amount; 
+                } else if (tx.type === 'recharge') totalRecharged += tx.amount;
                 else if (tx.type === 'cash_out') totalRefunded += tx.amount;
             });
             document.getElementById('adminTotalRecharged').textContent = `₹${totalRecharged.toFixed(2)}`;
@@ -1080,13 +1100,13 @@
             document.getElementById('adminOutstandingBalance').textContent = `₹${(totalRecharged - totalSales - totalRefunded).toFixed(2)}`;
             document.getElementById('adminTotalTransactions').textContent = transactions.length;
             document.getElementById('adminAvgPurchaseValue').textContent = `₹${(purchaseCount > 0 ? totalSales / purchaseCount : 0).toFixed(2)}`;
-            
+           
             const renderSummary = (el, data) => el.innerHTML = Object.keys(data).length > 0 ? Object.entries(data).sort((a,b)=>b[1]-a[1]).map(([k,v]) => `<div class="flex justify-between p-2 bg-gray-700 rounded"><span>${k}</span><span class="font-medium">${typeof v === 'number' && k.includes('Class') ? '₹'+v.toFixed(2) : v + (typeof v === 'number' ? '' : ' sold')}</span></div>`).join('') : '<p class="text-gray-400 text-sm">No data.</p>';
             renderSummary(document.getElementById('adminStallSalesSummary'), stallSales);
             renderSummary(document.getElementById('adminTopItemsList'), topItems);
             renderSummary(document.getElementById('adminClassSpendingSummary'), classSpending);
 
-            document.getElementById('adminTransactionList').innerHTML = transactions.map(tx => { 
+            document.getElementById('adminTransactionList').innerHTML = transactions.map(tx => {
                 const time = tx.timestamp ? new Date(tx.timestamp.seconds * 1000).toLocaleTimeString() : '...';
                 const itemsStr = tx.items ? tx.items.map(i => `${i.name} (x${i.quantity})`).join(', ') : '';
                 // Added Admin Name check
@@ -1095,7 +1115,7 @@
                 if (tx.type === 'purchase') return `<div class="bg-gray-700 p-3 rounded-lg"><p class="font-semibold">${tx.studentName} paid ${tx.stallName}</p><p class="text-sm">${itemsStr}</p><div class="flex justify-between items-center mt-1"><span class="text-red-400 font-bold">- ₹${tx.amount.toFixed(2)}</span><span class="text-xs text-gray-400">${time}</span></div></div>`;
                 else if (tx.type === 'recharge') return `<div class="bg-gray-700 p-3 rounded-lg"><p class="font-semibold">${tx.studentName} recharged${adminLabel}</p><div class="flex justify-between items-center mt-1"><span class="text-green-400 font-bold">+ ₹${tx.amount.toFixed(2)}</span><span class="text-xs text-gray-400">${time}</span></div></div>`;
                 else if (tx.type === 'cash_out') return `<div class="bg-gray-700 p-3 rounded-lg"><p class="font-semibold">${tx.studentName} cash out${adminLabel}</p><div class="flex justify-between items-center mt-1"><span class="text-red-400 font-bold">- ₹${tx.amount.toFixed(2)}</span><span class="text-xs text-gray-400">${time}</span></div></div>`;
-            }).join(''); 
+            }).join('');
             appState.allTransactionsForExport = transactions;
         }
 
@@ -1143,7 +1163,7 @@
                 document.getElementById('editVotingOptionsModal').classList.remove('hidden');
             });
         }
-        
+       
         async function addVotingCategory() {
             const title = document.getElementById('adminVotingCategoryTitle').value.trim();
             const options = document.getElementById('adminVotingCategoryOptions').value.split('\n').map(o=>o.trim()).filter(o=>o.length>0);
@@ -1195,7 +1215,7 @@
         function exportTransactionsToCSV() {
             if (appState.allTransactionsForExport.length === 0) return showAlert('No transactions.');
             // CSV Header updated to include Admin
-            let csv = "Date,Time,Type,Student,Amount,Stall,Items,Admin\r\n"; 
+            let csv = "Date,Time,Type,Student,Amount,Stall,Items,Admin\r\n";
             appState.allTransactionsForExport.forEach(tx => {
                 const dt = tx.timestamp ? new Date(tx.timestamp.seconds * 1000) : new Date();
                 const itemsStr = tx.items ? tx.items.map(i => `${i.name}(x${i.quantity})`).join("|") : 'N/A';
@@ -1234,9 +1254,20 @@
             document.getElementById('studentPassClass').textContent = user.class || 'N/A';
             const qrContainer = document.getElementById('studentPassQR'); qrContainer.innerHTML = '';
             new QRCode(qrContainer, { text: user.id, width: 200, height: 200 });
+           
+            // Listen for changes to all balance types
             currentUnsubscribes.push(onSnapshot(doc(usersRef(), user.id), s => {
-                if(s.exists()) { appState.currentUser.balance = s.data().balance; document.getElementById('studentBalance').textContent = `₹${s.data().balance.toFixed(2)}`; } else logout();
+                if(s.exists()) {
+                    const d = s.data();
+                    appState.currentUser.balance = d.balance;
+                    // Update UI with multiple balances
+                    document.getElementById('studentBalanceMain').textContent = `₹${(d.balance||0).toFixed(2)}`;
+                    document.getElementById('studentBalanceFood').textContent = `₹${(d.balance_food||0).toFixed(2)}`;
+                    document.getElementById('studentBalanceGames').textContent = `₹${(d.balance_games||0).toFixed(2)}`;
+                    document.getElementById('studentBalanceProduct').textContent = `₹${(d.balance_product||0).toFixed(2)}`;
+                } else logout();
             }));
+           
             document.getElementById('studentEventInfo').innerHTML = formatEventInfo(appState.eventInfo);
             loadStudentStallList(); loadStudentTransactionHistory(); loadStudentVotingPanel();
         }
@@ -1256,7 +1287,7 @@
                 if (!c.options || c.options.length === 0) return '';
                 return `<div class="bg-gray-700 p-4 rounded-lg border-t-4 ${voted?'border-green-500':'border-pink-500'}">
                     <h4 class="text-xl font-bold mb-3">${c.title}</h4>
-                    ${voted ? `<p class="text-green-400 font-bold">Voted: ${voted}</p>` : 
+                    ${voted ? `<p class="text-green-400 font-bold">Voted: ${voted}</p>` :
                     `<div class="space-y-2">${c.options.map(o => `<button class="btn-vote w-full text-left bg-gray-600 hover:bg-pink-600 p-2 rounded" data-id="${c.id}" data-opt="${escapeHTML(o)}">${o}</button>`).join('')}</div>`}
                 </div>`;
             }).join('');
@@ -1274,7 +1305,7 @@
              const listEl = document.getElementById('studentStallList');
              const stalls = Object.values(appState.allStallMenus);
              if (stalls.length === 0) { listEl.innerHTML = '<p class="text-gray-400">No stalls.</p>'; return; }
-             listEl.innerHTML = stalls.map(s => `<div class="bg-gray-800 p-4 rounded-lg"><h4 class="text-xl font-semibold text-blue-300">${s.name}</h4><div class="mt-2 space-y-1">${renderMenuList(s.menu, null, false)}</div></div>`).join('');
+             listEl.innerHTML = stalls.map(s => `<div class="bg-gray-800 p-4 rounded-lg"><h4 class="text-xl font-semibold text-blue-300">${s.name} <span class="text-xs border border-gray-500 rounded px-1 ml-2 text-gray-400">${s.category || 'General'}</span></h4><div class="mt-2 space-y-1">${renderMenuList(s.menu, null, false)}</div></div>`).join('');
         }
 
         function loadStudentTransactionHistory() {
@@ -1306,7 +1337,11 @@
             if (!appState.currentUser) { logout(); return; }
             showView('stallDashboard');
             document.querySelector('[data-target="stall-panel-sales"]').click();
-            document.getElementById('stallName').textContent = appState.currentUser.name;
+           
+            // Display Stall Name & Category
+            const category = appState.currentUser.category || 'general';
+            document.getElementById('stallName').innerHTML = `${appState.currentUser.name} <span class="text-sm font-normal bg-gray-700 px-2 py-1 rounded ml-2 uppercase text-yellow-300">${category}</span>`;
+           
             currentUnsubscribes.push(onSnapshot(doc(stallsRef(), appState.currentUser.id), s => {
                 if(s.exists()) { document.getElementById('stallMenuList').innerHTML = renderMenuList(s.data().menu, null, false); appState.currentUser.menu = s.data().menu; } else logout();
             }));
@@ -1335,39 +1370,60 @@
                  try {
                      const docSnap = await getDoc(doc(usersRef(), text));
                      if(!docSnap.exists() || docSnap.data().role !== 'student') throw new Error('Invalid student.');
-                     appState.scannedStudentId = text; appState.scannedStudentName = docSnap.data().name;
-                     document.getElementById('stallPaymentStudentName').textContent = docSnap.data().name;
-                     document.getElementById('stallPaymentStudentBalance').textContent = `₹${docSnap.data().balance.toFixed(2)}`;
+                     
+                     const studentData = docSnap.data();
+                     appState.scannedStudentId = text;
+                     appState.scannedStudentName = studentData.name;
+                     
+                     document.getElementById('stallPaymentStudentName').textContent = studentData.name;
+                     
+                     // Show relevant balance based on stall category
+                     const stallCat = (appState.currentUser.category || 'general').toLowerCase();
+                     let balanceText = `Main: ₹${studentData.balance.toFixed(2)}`;
+                     
+                     if (stallCat === 'food') balanceText = `Food: ₹${(studentData.balance_food||0).toFixed(2)} | ` + balanceText;
+                     else if (stallCat === 'games') balanceText = `Games: ₹${(studentData.balance_games||0).toFixed(2)} | ` + balanceText;
+                     else if (stallCat === 'product') balanceText = `Prod: ₹${(studentData.balance_product||0).toFixed(2)} | ` + balanceText;
+                     
+                     document.getElementById('stallPaymentStudentBalance').textContent = balanceText;
                      document.getElementById('stall-qr-reader-container').classList.add('hidden');
                      document.getElementById('stallPaymentDetails').classList.remove('hidden');
                      document.getElementById('btnStallConfirmPayment').classList.remove('hidden');
-                     buildCartUI(docSnap.data().balance);
+                     
+                     // Pass relevant restricted balance + main balance for validation logic
+                     let restrictedBal = 0;
+                     if(stallCat === 'food') restrictedBal = studentData.balance_food || 0;
+                     else if(stallCat === 'games') restrictedBal = studentData.balance_games || 0;
+                     else if(stallCat === 'product') restrictedBal = studentData.balance_product || 0;
+                     
+                     buildCartUI(studentData.balance, restrictedBal);
                  } catch(e) { showAlert(e.message); loadStallDashboard(); } finally { hideLoading(); }
              }, ()=>{});
         }
-        function buildCartUI(bal) {
+        function buildCartUI(mainBal, restrictedBal) {
             const el = document.getElementById('stallCart');
             const menu = appState.currentUser.menu || [];
             if(menu.length === 0) { el.innerHTML = '<p>No menu.</p>'; document.getElementById('btnStallConfirmPayment').classList.add('hidden'); return; }
             el.innerHTML = menu.map(i => `
                 <div class="bg-gray-700 p-3 rounded flex justify-between items-center">
                     <div><p>${i.name}</p><p class="text-blue-300">₹${i.price}</p></div>
-                    <div class="flex items-center space-x-3"><button class="btn-cart bg-red-600 w-8 h-8 rounded-full" onclick="updateCart('${i.id}',false,${bal})">-</button><span id="qty-${i.id}">0</span><button class="btn-cart bg-green-600 w-8 h-8 rounded-full" onclick="updateCart('${i.id}',true,${bal})">+</button></div>
+                    <div class="flex items-center space-x-3"><button class="btn-cart bg-red-600 w-8 h-8 rounded-full" onclick="updateCart('${i.id}',false,${mainBal},${restrictedBal})">-</button><span id="qty-${i.id}">0</span><button class="btn-cart bg-green-600 w-8 h-8 rounded-full" onclick="updateCart('${i.id}',true,${mainBal},${restrictedBal})">+</button></div>
                 </div>`).join('');
-            updateCartTotal(bal);
+            updateCartTotal(mainBal, restrictedBal);
         }
-        window.updateCart = function(id, inc, bal) {
+        window.updateCart = function(id, inc, mainBal, restrictedBal) {
              const qty = (appState.stallCart[id]||0) + (inc ? 1 : -1);
              const item = appState.currentUser.menu.find(i=>i.id===id);
              if(inc && qty > (item.stock||0)) { showAlert("Out of stock"); return; }
-             if(qty >= 0) { appState.stallCart[id] = qty; document.getElementById(`qty-${id}`).textContent = qty; updateCartTotal(bal); }
+             if(qty >= 0) { appState.stallCart[id] = qty; document.getElementById(`qty-${id}`).textContent = qty; updateCartTotal(mainBal, restrictedBal); }
         }
-        function updateCartTotal(bal) {
+        function updateCartTotal(mainBal, restrictedBal) {
             let total = 0;
             appState.currentUser.menu.forEach(i => total += (appState.stallCart[i.id]||0) * i.price);
             document.getElementById('stallCartTotal').textContent = `₹${total.toFixed(2)}`;
             const btn = document.getElementById('btnStallConfirmPayment');
-            if(total > bal || total === 0) { btn.disabled = true; btn.classList.add('opacity-50'); }
+            // Total available = Restricted Wallet + Main Wallet
+            if(total > (mainBal + restrictedBal) || total === 0) { btn.disabled = true; btn.classList.add('opacity-50'); }
             else { btn.disabled = false; btn.classList.remove('opacity-50'); }
         }
         async function processPayment() {
@@ -1379,18 +1435,47 @@
                      const q = appState.stallCart[i.id] || 0;
                      if(q > 0) { total += i.price * q; items.push({id:i.id, name:i.name, price:i.price, quantity:q}); stockUpdates.push({id:i.id, q}); }
                  });
+                 
+                 const stallCat = (appState.currentUser.category || 'general').toLowerCase();
+
                  await runTransaction(db, async (tx) => {
                      const sRef = doc(usersRef(), appState.scannedStudentId);
                      const stRef = doc(stallsRef(), appState.currentUser.id);
                      const sDoc = await tx.get(sRef); const stDoc = await tx.get(stRef);
-                     if(sDoc.data().balance < total) throw new Error("Low balance.");
+                     const sData = sDoc.data();
+                     
+                     // 1. Determine which wallet to use
+                     let restrictedKey = null;
+                     if(stallCat === 'food') restrictedKey = 'balance_food';
+                     else if(stallCat === 'games') restrictedKey = 'balance_games';
+                     else if(stallCat === 'product') restrictedKey = 'balance_product';
+                     
+                     let restrictedAmt = restrictedKey ? (sData[restrictedKey] || 0) : 0;
+                     let mainAmt = sData.balance;
+                     
+                     // 2. Check total availability
+                     if((restrictedAmt + mainAmt) < total) throw new Error("Low balance.");
+                     
+                     // 3. Stock Check
                      const menu = stDoc.data().menu;
                      stockUpdates.forEach(u => {
                          const idx = menu.findIndex(m => m.id === u.id);
                          if(menu[idx].stock < u.q) throw new Error("Stock changed.");
                          menu[idx].stock -= u.q;
                      });
-                     tx.update(sRef, { balance: increment(-total) });
+                     
+                     // 4. Deduct logic: Use Restricted first, then Main
+                     let remainingTotal = total;
+                     if (restrictedKey && restrictedAmt > 0) {
+                         const deductRestricted = Math.min(restrictedAmt, remainingTotal);
+                         tx.update(sRef, { [restrictedKey]: increment(-deductRestricted) });
+                         remainingTotal -= deductRestricted;
+                     }
+                     
+                     if (remainingTotal > 0) {
+                         tx.update(sRef, { balance: increment(-remainingTotal) });
+                     }
+
                      tx.update(stRef, { menu });
                      tx.set(doc(transactionsRef()), { studentId: appState.scannedStudentId, studentName: appState.scannedStudentName, stallId: appState.currentUser.id, stallName: appState.currentUser.name, amount: total, items, type: 'purchase', timestamp: serverTimestamp() });
                  });
@@ -1419,7 +1504,11 @@
                      if(!d.exists() || d.data().role !== 'student') throw new Error('Invalid.');
                      appState.scannedStudentId = text; appState.scannedStudentName = d.data().name;
                      document.getElementById('adminRechargeStudentName').textContent = d.data().name;
-                     document.getElementById('adminRechargeStudentBalance').textContent = `₹${d.data().balance.toFixed(2)}`;
+                     // Show all balances
+                     const data = d.data();
+                     const balString = `Main: ₹${data.balance} | Food: ₹${data.balance_food||0} | Games: ₹${data.balance_games||0} | Prod: ₹${data.balance_product||0}`;
+                     document.getElementById('adminRechargeStudentBalance').textContent = balString;
+                     
                      document.getElementById('admin-recharge-qr-reader-container').classList.add('hidden');
                      document.getElementById('adminRechargeDetails').classList.remove('hidden');
                      document.getElementById('btnAdminConfirmRecharge').classList.remove('hidden');
@@ -1429,16 +1518,21 @@
         }
         async function _processBalanceChange(type, sign) {
              const amt = parseFloat(document.getElementById('adminRechargeAmount').value);
+             const targetWallet = document.getElementById('adminRechargeType').value; // 'balance', 'balance_food', etc.
+             
              if(!amt || amt<=0) return showAlert("Invalid amount.");
              showLoading("Processing...");
              try {
                  await runTransaction(db, async tx => {
                      const ref = doc(usersRef(), appState.scannedStudentId);
                      const d = await tx.get(ref);
-                     if(sign === -1 && d.data().balance < amt) throw new Error("Low balance.");
-                     tx.update(ref, { balance: increment(amt * sign) });
+                     // Check balance if cashing out
+                     const currentBal = d.data()[targetWallet] || 0;
+                     if(sign === -1 && currentBal < amt) throw new Error("Low balance in selected wallet.");
+                     
+                     tx.update(ref, { [targetWallet]: increment(amt * sign) });
                      // Admin Name is correctly set here from appState.currentUser.id (which is the logged-in username)
-                     tx.set(doc(transactionsRef()), { studentId: appState.scannedStudentId, studentName: appState.scannedStudentName, amount: amt, type, adminName: appState.currentUser.id, timestamp: serverTimestamp() });
+                     tx.set(doc(transactionsRef()), { studentId: appState.scannedStudentId, studentName: appState.scannedStudentName, amount: amt, type, wallet: targetWallet, adminName: appState.currentUser.id, timestamp: serverTimestamp() });
                  });
                  showAlert("Done!"); loadAdminDashboard(appState.currentUser.role);
              } catch(e) { showAlert(e.message); } finally { hideLoading(); }
@@ -1449,7 +1543,16 @@
              const classesSnap = await getDoc(classesRef());
              const classNames = (classesSnap.exists() && classesSnap.data().classNames) ? classesSnap.data().classNames : [];
              if (!classNames.includes(className)) await setDoc(classesRef(), { classNames: arrayUnion(className) }, { merge: true });
-             const newUser = { name, role: 'student', balance: 0, class: className, createdAt: serverTimestamp() };
+             const newUser = {
+                 name,
+                 role: 'student',
+                 balance: 0,
+                 balance_food: 0,
+                 balance_games: 0,
+                 balance_product: 0,
+                 class: className,
+                 createdAt: serverTimestamp()
+             };
              const newDocRef = await addDoc(usersRef(), newUser);
              await updateDoc(newDocRef, { userId: newDocRef.id });
              return newDocRef.id;
@@ -1521,26 +1624,26 @@
 
         <!-- VIEW: Admin Login --><div id="adminLoginView" class="hidden">
             <header class="my-8"> <button id="btnAdminLoginBack" class="text-blue-400 hover:text-blue-300">&larr; Back to Home</button> <h1 class="text-3xl font-bold text-center text-red-400 mt-4">Admin Login</h1> </header>
-            <main class="space-y-4 bg-gray-800 p-6 rounded-lg shadow-xl"> 
-                <div> <label class="block text-sm font-medium text-gray-300 mb-1">Username</label> <input type="text" id="adminUsername" class="w-full bg-gray-700 text-white border border-gray-600 rounded-lg p-3" placeholder="admin"> </div> 
-                <div> <label class="block text-sm font-medium text-gray-300 mb-1">Password</label> <input type="password" id="adminPassword" class="w-full bg-gray-700 text-white border border-gray-600 rounded-lg p-3" placeholder="••••••••"> </div> 
-                <button id="btnAdminLoginSubmit" class="w-full bg-red-600 hover:bg-red-700 text-white font-bold py-3 px-4 rounded-lg shadow-lg transition-all"> Login </button> 
+            <main class="space-y-4 bg-gray-800 p-6 rounded-lg shadow-xl">
+                <div> <label class="block text-sm font-medium text-gray-300 mb-1">Username</label> <input type="text" id="adminUsername" class="w-full bg-gray-700 text-white border border-gray-600 rounded-lg p-3" placeholder="admin"> </div>
+                <div> <label class="block text-sm font-medium text-gray-300 mb-1">Password</label> <input type="password" id="adminPassword" class="w-full bg-gray-700 text-white border border-gray-600 rounded-lg p-3" placeholder="••••••••"> </div>
+                <button id="btnAdminLoginSubmit" class="w-full bg-red-600 hover:bg-red-700 text-white font-bold py-3 px-4 rounded-lg shadow-lg transition-all"> Login </button>
             </main>
         </div>
 
         <!-- VIEW: Admin Dashboard --><div id="adminDashboardView" class="hidden">
-            <header class="my-8 flex justify-between items-center"> 
-                <div> <h1 class="text-3xl font-bold text-red-400">Admin Dashboard</h1> <p class="text-sm text-gray-400">Udaya Public School</p> </div> 
+            <header class="my-8 flex justify-between items-center">
+                <div> <h1 class="text-3xl font-bold text-red-400">Admin Dashboard</h1> <p class="text-sm text-gray-400">Udaya Public School</p> </div>
                 <div class="flex space-x-3"> <button id="btnAdminRefresh" class="bg-blue-600 hover:bg-blue-700 text-white font-medium py-2 px-4 rounded-lg text-sm transition-all self-start">Refresh Data</button> <button id="btnAdminLogout" class="bg-gray-700 hover:bg-gray-600 text-white font-medium py-2 px-4 rounded-lg text-sm transition-all self-start">Logout</button> </div>
             </header>
-            <div class="mb-4 border-b border-gray-700"> <nav class="flex space-x-1 overflow-x-auto pb-2" aria-label="Tabs"> 
-                <button data-target="panel-students" class="admin-tab bg-blue-600 text-white px-4 py-3 rounded-t-lg font-medium text-sm flex-shrink-0">Students</button> 
-                <button data-target="panel-stalls" class="admin-tab bg-gray-700 text-gray-300 px-4 py-3 rounded-t-lg font-medium text-sm flex-shrink-0">Stalls</button> 
-                <button data-target="panel-classes" class="admin-tab bg-gray-700 text-gray-300 px-4 py-3 rounded-t-lg font-medium text-sm flex-shrink-0">Classes</button> 
-                <button data-target="panel-reports" class="admin-tab bg-gray-700 text-gray-300 px-4 py-3 rounded-t-lg font-medium text-sm flex-shrink-0">Reports</button> 
-                <button data-target="panel-event" class="admin-tab bg-gray-700 text-gray-300 px-4 py-3 rounded-t-lg font-medium text-sm flex-shrink-0">Event</button> 
+            <div class="mb-4 border-b border-gray-700"> <nav class="flex space-x-1 overflow-x-auto pb-2" aria-label="Tabs">
+                <button data-target="panel-students" class="admin-tab bg-blue-600 text-white px-4 py-3 rounded-t-lg font-medium text-sm flex-shrink-0">Students</button>
+                <button data-target="panel-stalls" class="admin-tab bg-gray-700 text-gray-300 px-4 py-3 rounded-t-lg font-medium text-sm flex-shrink-0">Stalls</button>
+                <button data-target="panel-classes" class="admin-tab bg-gray-700 text-gray-300 px-4 py-3 rounded-t-lg font-medium text-sm flex-shrink-0">Classes</button>
+                <button data-target="panel-reports" class="admin-tab bg-gray-700 text-gray-300 px-4 py-3 rounded-t-lg font-medium text-sm flex-shrink-0">Reports</button>
+                <button data-target="panel-event" class="admin-tab bg-gray-700 text-gray-300 px-4 py-3 rounded-t-lg font-medium text-sm flex-shrink-0">Event</button>
                 <!-- NEW ADMIN TAB -->
-                <button data-target="panel-admins" class="admin-tab bg-gray-700 text-gray-300 px-4 py-3 rounded-t-lg font-medium text-sm flex-shrink-0">Admins</button> 
+                <button data-target="panel-admins" class="admin-tab bg-gray-700 text-gray-300 px-4 py-3 rounded-t-lg font-medium text-sm flex-shrink-0">Admins</button>
             </nav> </div>
             <main class="space-y-6">
                 <!-- Panel 1: Students -->
@@ -1553,7 +1656,20 @@
                 </div>
                 <!-- Panel 2: Stalls -->
                 <div id="panel-stalls" class="admin-tab-panel hidden space-y-6">
-                    <section class="bg-gray-800 p-6 rounded-lg shadow-xl"> <h2 class="text-2xl font-semibold mb-4 text-green-300">Generate Stall</h2> <div class="space-y-4"> <input type="text" id="adminStallName" class="w-full bg-gray-700 text-white border border-gray-600 rounded-lg p-3" placeholder="Stall Name"> <button id="btnAdminGenerateStall" class="w-full bg-green-600 hover:bg-green-700 text-white font-bold py-3 px-4 rounded-lg shadow-lg"> Generate Stall QR </button> <div id="adminStallQRContainer" class="mt-4"> </div> </section>
+                    <section class="bg-gray-800 p-6 rounded-lg shadow-xl">
+                        <h2 class="text-2xl font-semibold mb-4 text-green-300">Generate Stall</h2>
+                        <div class="space-y-4">
+                            <input type="text" id="adminStallName" class="w-full bg-gray-700 text-white border border-gray-600 rounded-lg p-3" placeholder="Stall Name">
+                            <select id="adminStallCategory" class="w-full bg-gray-700 text-white border border-gray-600 rounded-lg p-3">
+                                <option value="general">General Stall</option>
+                                <option value="food">Food Stall</option>
+                                <option value="games">Games Stall</option>
+                                <option value="product">Product Stall</option>
+                            </select>
+                            <button id="btnAdminGenerateStall" class="w-full bg-green-600 hover:bg-green-700 text-white font-bold py-3 px-4 rounded-lg shadow-lg"> Generate Stall QR </button>
+                            <div id="adminStallQRContainer" class="mt-4"> </div>
+                        </div>
+                    </section>
                     <section class="bg-gray-800 p-6 rounded-lg shadow-xl"> <h2 class="text-2xl font-semibold mb-4 text-purple-300">Bulk Download Stall Passes</h2> <button id="btnDownloadAllStallPasses" class="w-full bg-purple-600 hover:bg-purple-700 text-white font-bold py-3 px-4 rounded-lg shadow-lg transition-all hidden"> Download All Stall Passes </button> </section>
                     <section class="bg-gray-800 p-6 rounded-lg shadow-xl"> <h2 class="text-2xl font-semibold mb-4 text-yellow-300">Find Stall QR</h2> <div class="space-y-4"> <input type="text" id="adminSearchStallName" class="w-full bg-gray-700 text-white border border-gray-600 rounded-lg p-3" placeholder="Enter Full Stall Name"> <button id="btnAdminSearchStall" class="w-full bg-yellow-600 hover:bg-yellow-700 text-white font-bold py-3 px-4 rounded-lg shadow-lg"> Search </button> <div id="adminSearchStallQRContainer" class="mt-4 hidden"> </div> </section>
                     <section class="bg-gray-800 p-6 rounded-lg shadow-xl"> <h2 class="text-2xl font-semibold mb-4 text-green-300">Add Menu Item</h2> <div class="space-y-4"> <div><label class="block text-sm font-medium text-gray-300 mb-1">Select Stall</label><select id="adminStallSelect" class="w-full bg-gray-700 text-white border border-gray-600 rounded-lg p-3"></select></div> <input type="text" id="adminItemName" class="w-full bg-gray-700 text-white border border-gray-600 rounded-lg p-3" placeholder="Item Name"> <input type="number" id="adminItemPrice" class="w-full bg-gray-700 text-white border border-gray-600 rounded-lg p-3" placeholder="Item Price"> <input type="number" id="adminItemStock" class="w-full bg-gray-700 text-white border border-gray-600 rounded-lg p-3" placeholder="Initial Stock" min="0"> <button id="btnAdminAddMenuItem" class="w-full bg-green-600 hover:bg-green-700 text-white font-bold py-3 px-4 rounded-lg shadow-lg">Add Item</button> </div> </section>
@@ -1568,10 +1684,10 @@
                 <div id="panel-reports" class="admin-tab-panel hidden space-y-6">
                     <section class="bg-gray-800 p-6 rounded-lg shadow-xl space-y-4"> <h2 class="text-2xl font-semibold mb-4 text-yellow-300">Event Financials</h2> <div class="flex justify-between bg-gray-700 p-4 rounded-lg"> <span>Total Recharged:</span> <span id="adminTotalRecharged" class="text-lg font-bold text-green-400">₹0.00</span> </div> <div class="flex justify-between bg-gray-700 p-4 rounded-lg"> <span>Total Sales:</span> <span id="adminTotalSales" class="text-lg font-bold text-red-400">₹0.00</span> </div> <div class="flex justify-between bg-gray-700 p-4 rounded-lg"> <span>Total Refunded:</span> <span id="adminTotalRefunded" class="text-lg font-bold text-yellow-400">₹0.00</span> </div> <div class="flex justify-between bg-gray-700 p-4 rounded-lg"> <span>Outstanding:</span> <span id="adminOutstandingBalance" class="text-lg font-bold text-blue-400">₹0.00</span> </div> <div class="grid grid-cols-2 gap-4"> <div class="bg-gray-700 p-4 rounded-lg text-center"> <span class="text-sm text-gray-400">Total Tx</span> <span id="adminTotalTransactions" class="text-2xl font-bold block">0</span> </div> <div class="bg-gray-700 p-4 rounded-lg text-center"> <span class="text-sm text-gray-400">Avg. Purchase</span> <span id="adminAvgPurchaseValue" class="text-2xl font-bold block">₹0.00</span> </div> </div> </section>
                     <section class="bg-gray-800 p-6 rounded-lg shadow-xl"> <h3 class="text-xl font-semibold mb-2">Sales per Stall</h3> <div id="adminStallSalesSummary" class="space-y-2 max-h-60 overflow-y-auto"> </div> </section>
-                    <section class="bg-gray-800 p-6 rounded-lg shadow-xl"> <h3 class="text-xl font-semibold mb-2">Top-Selling Items</h3> <div id="adminTopItemsList" class="space-y-2 max-h-60 overflow-y-auto"> </div> </section> 
+                    <section class="bg-gray-800 p-6 rounded-lg shadow-xl"> <h3 class="text-xl font-semibold mb-2">Top-Selling Items</h3> <div id="adminTopItemsList" class="space-y-2 max-h-60 overflow-y-auto"> </div> </section>
                     <section class="bg-gray-800 p-6 rounded-lg shadow-xl"> <h3 class="text-xl font-semibold mb-2">Spending by Class</h3> <div id="adminClassSpendingSummary" class="space-y-2 max-h-60 overflow-y-auto"> </div> </section>
                     <section class="bg-gray-800 p-6 rounded-lg shadow-xl"> <h2 class="text-2xl font-semibold mb-4 text-pink-300">Voting Results</h2> <div id="adminVotingResults" class="space-y-4"> <p class="text-gray-400">Loading...</p> </div> </section>
-                    <section class="flex justify-between items-center mb-4"> <h2 class="text-2xl font-semibold text-yellow-300">Transactions</h2> <button id="btnAdminRefreshReports" class="bg-yellow-600 hover:bg-yellow-700 text-white font-bold py-2 px-4 rounded-lg text-sm">Refresh</button> </section> 
+                    <section class="flex justify-between items-center mb-4"> <h2 class="text-2xl font-semibold text-yellow-300">Transactions</h2> <button id="btnAdminRefreshReports" class="bg-yellow-600 hover:bg-yellow-700 text-white font-bold py-2 px-4 rounded-lg text-sm">Refresh</button> </section>
                     <section> <div id="adminTransactionList" class="space-y-3 max-h-96 overflow-y-auto"> </div> <button id="btnExportCSV" class="w-full bg-blue-600 hover:bg-blue-700 text-white font-bold py-3 px-4 rounded-lg shadow-lg mt-4"> Export CSV </button> </section>
                 </div>
                 <!-- Panel 5: Event -->
@@ -1600,33 +1716,33 @@
 
         <!-- VIEW: Scanner --><div id="scannerView" class="hidden"> <header class="my-8"> <h1 id="scannerTitle" class="text-3xl font-bold text-center text-yellow-300">Scan QR Code</h1> </header> <main class="space-y-4"> <div id="qr-reader" class="w-full rounded-lg overflow-hidden border-4 border-gray-700"></div> <button id="btnCancelScan" class="w-full bg-gray-700 hover:bg-gray-600 text-white font-bold py-3 px-4 rounded-lg shadow-lg"> Cancel </button> </main> </div>
 
-        <!-- VIEW: Student Dashboard --><div id="studentDashboardView" class="hidden"> <header class="my-8"> <button id="btnStudentBack" class="text-blue-400 hover:text-blue-300 mb-4">&larr; Logout</button> <div class="flex justify-between items-start"> <div> <h1 class="text-3xl font-bold text-blue-400">Welcome, <span id="studentName"></span></h1> <p class="text-sm text-gray-400">Udaya Public School</p> </div> <div class="flex space-x-3"> <button id="btnStudentRefresh" class="bg-blue-600 hover:bg-blue-700 text-white font-medium py-2 px-4 rounded text-sm">Refresh</button> <button id="btnStudentLogout" class="bg-gray-700 hover:bg-gray-600 text-white font-medium py-2 px-4 rounded text-sm">Logout</button> </div> </div> <div class="mt-4"> <p id="studentIdDisplay" class="text-sm text-gray-400"></p> <p class="text-lg text-gray-300 mt-4">Balance:</p> <p id="studentBalance" class="text-5xl font-extrabold text-green-400">₹0.00</p> </div> </header> <div class="mb-4 border-b border-gray-700"> <nav class="flex space-x-1 overflow-x-auto pb-2"> <button data-target="student-panel-wallet" class="student-tab bg-blue-600 text-white px-4 py-3 rounded-t-lg font-medium text-sm flex-shrink-0">Wallet</button> <button data-target="student-panel-stalls" class="student-tab bg-gray-700 text-gray-300 px-4 py-3 rounded-t-lg font-medium text-sm flex-shrink-0">Stalls</button> <button data-target="student-panel-event" class="student-tab bg-gray-700 text-gray-300 px-4 py-3 rounded-t-lg font-medium text-sm flex-shrink-0">Info</button> <button data-target="student-panel-voting" class="student-tab bg-gray-700 text-gray-300 px-4 py-3 rounded-t-lg font-medium text-sm flex-shrink-0">Vote</button> </nav> </div> <main class="space-y-8"> <div id="student-panel-wallet" class="student-tab-panel space-y-8"> <section class="bg-gray-800 p-6 rounded-lg shadow-xl space-y-4"> <h2 class="text-2xl font-semibold mb-4 text-blue-300">My Entry Pass</h2> <div id="student-printable-pass" class="printable-area bg-white text-black p-6 rounded-lg shadow-lg max-w-xs mx-auto border-4 border-blue-600"> <div class="text-center border-b pb-4 border-gray-300"> <h3 class="text-xl font-bold text-gray-800">Udaya Public School</h3> </div> <div class="my-4 text-center"> <p class="text-2xl font-bold text-blue-600">ENTRY PASS</p> </div> <div class="my-4 text-center"> <p id="studentPassName" class="text-lg font-bold text-black"></p> <p class="text-base text-gray-700">Class: <span id="studentPassClass"></span></p> </div> <div id="studentPassQR" class="flex justify-center p-4 bg-white rounded-lg"> </div> </div> <div class="flex space-x-2 mt-4 max-w-xs mx-auto print-hide"> <button id="btnStudentPrintPass" class="w-full bg-blue-600 hover:bg-blue-700 text-white font-bold py-2 px-4 rounded-lg">Print</button> <button id="btnStudentDownloadQR" class="w-full bg-gray-600 hover:bg-gray-700 text-white font-bold py-2 px-4 rounded-lg">Download</button> </div> </section> <section> <h2 class="text-2xl font-semibold mb-4">Transactions</h2> <div id="studentTransactionList" class="space-y-3 max-h-96 overflow-y-auto"> </div> </section> </div> <div id="student-panel-stalls" class="student-tab-panel hidden space-y-8"> <section> <h2 class="text-2xl font-semibold mb-4">Stalls & Prices</h2> <div id="studentStallList" class="space-y-4"> </div> </section> </div> <div id="student-panel-event" class="student-tab-panel hidden space-y-8"> <section class="bg-gray-800 p-6 rounded-lg shadow-xl"> <h2 class="text-2xl font-semibold mb-4 text-indigo-300">Event Information</h2> <div id="studentEventInfo" class="text-gray-200 leading-relaxed event-info-content"> </div> </section> </div> <div id="student-panel-voting" class="student-tab-panel hidden space-y-8"> <section class="bg-gray-800 p-6 rounded-lg shadow-xl"> <h2 class="text-2xl font-semibold mb-4 text-pink-300">Vote</h2> <div id="votingCategoriesList" class="space-y-6"> </div> </section> </div> </main> </div>
+        <!-- VIEW: Student Dashboard --><div id="studentDashboardView" class="hidden"> <header class="my-8"> <button id="btnStudentBack" class="text-blue-400 hover:text-blue-300 mb-4">&larr; Logout</button> <div class="flex justify-between items-start"> <div> <h1 class="text-3xl font-bold text-blue-400">Welcome, <span id="studentName"></span></h1> <p class="text-sm text-gray-400">Udaya Public School</p> </div> <div class="flex space-x-3"> <button id="btnStudentRefresh" class="bg-blue-600 hover:bg-blue-700 text-white font-medium py-2 px-4 rounded text-sm">Refresh</button> <button id="btnStudentLogout" class="bg-gray-700 hover:bg-gray-600 text-white font-medium py-2 px-4 rounded text-sm">Logout</button> </div> </div> <div class="mt-4"> <p id="studentIdDisplay" class="text-sm text-gray-400"></p> <p class="text-lg text-gray-300 mt-4">Main Balance:</p> <p id="studentBalanceMain" class="text-5xl font-extrabold text-green-400">₹0.00</p> <div class="grid grid-cols-3 gap-2 mt-4 text-center"> <div class="bg-gray-800 p-2 rounded"> <p class="text-xs text-gray-400">Food</p> <p id="studentBalanceFood" class="text-lg font-bold text-orange-400">₹0.00</p> </div> <div class="bg-gray-800 p-2 rounded"> <p class="text-xs text-gray-400">Games</p> <p id="studentBalanceGames" class="text-lg font-bold text-purple-400">₹0.00</p> </div> <div class="bg-gray-800 p-2 rounded"> <p class="text-xs text-gray-400">Prod</p> <p id="studentBalanceProduct" class="text-lg font-bold text-teal-400">₹0.00</p> </div> </div> </div> </header> <div class="mb-4 border-b border-gray-700"> <nav class="flex space-x-1 overflow-x-auto pb-2"> <button data-target="student-panel-wallet" class="student-tab bg-blue-600 text-white px-4 py-3 rounded-t-lg font-medium text-sm flex-shrink-0">Wallet</button> <button data-target="student-panel-stalls" class="student-tab bg-gray-700 text-gray-300 px-4 py-3 rounded-t-lg font-medium text-sm flex-shrink-0">Stalls</button> <button data-target="student-panel-event" class="student-tab bg-gray-700 text-gray-300 px-4 py-3 rounded-t-lg font-medium text-sm flex-shrink-0">Info</button> <button data-target="student-panel-voting" class="student-tab bg-gray-700 text-gray-300 px-4 py-3 rounded-t-lg font-medium text-sm flex-shrink-0">Vote</button> </nav> </div> <main class="space-y-8"> <div id="student-panel-wallet" class="student-tab-panel space-y-8"> <section class="bg-gray-800 p-6 rounded-lg shadow-xl space-y-4"> <h2 class="text-2xl font-semibold mb-4 text-blue-300">My Entry Pass</h2> <div id="student-printable-pass" class="printable-area bg-white text-black p-6 rounded-lg shadow-lg max-w-xs mx-auto border-4 border-blue-600"> <div class="text-center border-b pb-4 border-gray-300"> <h3 class="text-xl font-bold text-gray-800">Udaya Public School</h3> </div> <div class="my-4 text-center"> <p class="text-2xl font-bold text-blue-600">ENTRY PASS</p> </div> <div class="my-4 text-center"> <p id="studentPassName" class="text-lg font-bold text-black"></p> <p class="text-base text-gray-700">Class: <span id="studentPassClass"></span></p> </div> <div id="studentPassQR" class="flex justify-center p-4 bg-white rounded-lg"> </div> </div> <div class="flex space-x-2 mt-4 max-w-xs mx-auto print-hide"> <button id="btnStudentPrintPass" class="w-full bg-blue-600 hover:bg-blue-700 text-white font-bold py-2 px-4 rounded-lg">Print</button> <button id="btnStudentDownloadQR" class="w-full bg-gray-600 hover:bg-gray-700 text-white font-bold py-2 px-4 rounded-lg">Download</button> </div> </section> <section> <h2 class="text-2xl font-semibold mb-4">Transactions</h2> <div id="studentTransactionList" class="space-y-3 max-h-96 overflow-y-auto"> </div> </section> </div> <div id="student-panel-stalls" class="student-tab-panel hidden space-y-8"> <section> <h2 class="text-2xl font-semibold mb-4">Stalls & Prices</h2> <div id="studentStallList" class="space-y-4"> </div> </section> </div> <div id="student-panel-event" class="student-tab-panel hidden space-y-8"> <section class="bg-gray-800 p-6 rounded-lg shadow-xl"> <h2 class="text-2xl font-semibold mb-4 text-indigo-300">Event Information</h2> <div id="studentEventInfo" class="text-gray-200 leading-relaxed event-info-content"> </div> </section> </div> <div id="student-panel-voting" class="student-tab-panel hidden space-y-8"> <section class="bg-gray-800 p-6 rounded-lg shadow-xl"> <h2 class="text-2xl font-semibold mb-4 text-pink-300">Vote</h2> <div id="votingCategoriesList" class="space-y-6"> </div> </section> </div> </main> </div>
 
         <!-- VIEW: Stall Dashboard --><div id="stallDashboardView" class="hidden"> <header class="my-8"> <button id="btnStallBack" class="text-blue-400 hover:text-blue-300 mb-4">&larr; Logout</button> <div class="flex justify-between items-start"> <div> <h1 class="text-3xl font-bold text-green-400"><span id="stallName"></span></h1> </div> <div class="flex space-x-3"> <button id="btnStallRefresh" class="bg-blue-600 hover:bg-blue-700 text-white font-medium py-2 px-4 rounded text-sm">Refresh</button> <button id="btnStallLogout" class="bg-gray-700 hover:bg-gray-600 text-white font-medium py-2 px-4 rounded text-sm">Logout</button> </div> </div> <div class="mt-4"> <p class="text-lg text-gray-300">Sales:</p> <p id="stallTotalSales" class="text-5xl font-extrabold text-white">₹0.00</p> </div> </header> <div class="mb-4 border-b border-gray-700"> <nav class="flex space-x-1"> <button data-target="stall-panel-sales" class="stall-tab bg-blue-600 text-white px-4 py-3 rounded-t-lg font-medium text-sm">Sales</button> <button data-target="stall-panel-menu" class="stall-tab bg-gray-700 text-gray-300 px-4 py-3 rounded-t-lg font-medium text-sm">Menu</button> <button data-target="stall-panel-event" class="stall-tab bg-gray-700 text-gray-300 px-4 py-3 rounded-t-lg font-medium text-sm">Info</button> </nav> </div> <main class="space-y-8"> <div id="stall-panel-sales" class="stall-tab-panel space-y-8"> <section><button id="btnStallScanToPay" class="w-full bg-blue-600 hover:bg-blue-700 text-white font-bold py-6 px-6 rounded-lg shadow-lg text-2xl transition-all">Scan Student QR</button></section> <section> <h2 class="text-2xl font-semibold mb-4">History</h2> <div id="stallSaleList" class="space-y-3 max-h-96 overflow-y-auto"> </div> </section> </div> <div id="stall-panel-menu" class="stall-tab-panel hidden space-y-8"> <section class="bg-gray-800 p-6 rounded-lg shadow-xl"> <h2 class="text-2xl font-semibold mb-4">My Menu</h2> <div id="stallMenuList" class="space-y-2"> </div> </section> </div> <div id="stall-panel-event" class="stall-tab-panel hidden space-y-8"> <section class="bg-gray-800 p-6 rounded-lg shadow-xl"> <h2 class="text-2xl font-semibold mb-4 text-indigo-300">Event Info</h2> <div id="stallEventInfo" class="text-gray-200 leading-relaxed event-info-content"> </div> </section> </div> </main> </div>
 
-        <!-- VIEW: Stall Payment --><div id="stallPaymentView" class="hidden"> <header class="my-8"> <h1 class="text-3xl font-bold text-center text-blue-400">Payment</h1> </header> <main class="space-y-6"> <div id="stall-qr-reader-container"> <p class="text-center text-lg text-yellow-300 mb-4">Scanning...</p> <div id="stall-qr-reader" class="w-full rounded-lg overflow-hidden border-4 border-gray-700"></div> </div> <div id="stallPaymentDetails" class="hidden space-y-6"> <section class="bg-gray-800 p-6 rounded-lg shadow-xl"> <h2 class="text-2xl font-semibold mb-2">Student</h2> <div class="flex justify-between items-center"> <span id="stallPaymentStudentName" class="text-xl"></span> <span id="stallPaymentStudentBalance" class="text-xl font-bold text-green-400"></span> </div> </section> <section class="bg-gray-800 p-6 rounded-lg shadow-xl"> <h2 class="text-2xl font-semibold mb-4">Order</h2> <div id="stallCart" class="space-y-4"> </div> </section> <section class="text-center"> <p class="text-lg text-gray-300">Total:</p> <p id="stallCartTotal" class="text-6xl font-extrabold text-green-400">₹0.00</p> </section> </div> <button id="btnStallConfirmPayment" class="hidden w-full bg-green-600 hover:bg-green-700 text-white font-bold py-4 px-6 rounded-lg shadow-lg text-lg transition-all"> Confirm </button> <button id="btnStallPaymentCancel" class="w-full bg-gray-700 hover:bg-gray-600 text-white font-bold py-3 px-4 rounded-lg shadow-lg transition-all"> Cancel </button> </main> </div>
+        <!-- VIEW: Stall Payment --><div id="stallPaymentView" class="hidden"> <header class="my-8"> <h1 class="text-3xl font-bold text-center text-blue-400">Payment</h1> </header> <main class="space-y-6"> <div id="stall-qr-reader-container"> <p class="text-center text-lg text-yellow-300 mb-4">Scanning...</p> <div id="stall-qr-reader" class="w-full rounded-lg overflow-hidden border-4 border-gray-700"></div> </div> <div id="stallPaymentDetails" class="hidden space-y-6"> <section class="bg-gray-800 p-6 rounded-lg shadow-xl"> <h2 class="text-2xl font-semibold mb-2">Student</h2> <div class="flex justify-between items-center"> <span id="stallPaymentStudentName" class="text-xl"></span> <span id="stallPaymentStudentBalance" class="text-lg font-bold text-green-400"></span> </div> </section> <section class="bg-gray-800 p-6 rounded-lg shadow-xl"> <h2 class="text-2xl font-semibold mb-4">Order</h2> <div id="stallCart" class="space-y-4"> </div> </section> <section class="text-center"> <p class="text-lg text-gray-300">Total:</p> <p id="stallCartTotal" class="text-6xl font-extrabold text-green-400">₹0.00</p> </section> </div> <button id="btnStallConfirmPayment" class="hidden w-full bg-green-600 hover:bg-green-700 text-white font-bold py-4 px-6 rounded-lg shadow-lg text-lg transition-all"> Confirm </button> <button id="btnStallPaymentCancel" class="w-full bg-gray-700 hover:bg-gray-600 text-white font-bold py-3 px-4 rounded-lg shadow-lg transition-all"> Cancel </button> </main> </div>
 
-        <!-- VIEW: Admin Recharge --><div id="adminRechargeView" class="hidden"> <header class="my-8"> <h1 class="text-3xl font-bold text-center text-green-400">Recharge / Cash Out</h1> </header> <main class="space-y-6"> <div id="admin-recharge-qr-reader-container"> <p class="text-center text-lg text-yellow-300 mb-4">Scanning...</p> <div id="admin-recharge-qr-reader" class="w-full rounded-lg overflow-hidden border-4 border-gray-700"></div> </div> <div id="adminRechargeDetails" class="hidden space-y-6"> <section class="bg-gray-800 p-6 rounded-lg shadow-xl"> <h2 class="text-2xl font-semibold mb-2">Student</h2> <div class="flex justify-between items-center"> <span id="adminRechargeStudentName" class="text-xl"></span> <span id="adminRechargeStudentBalance" class="text-xl font-bold text-green-400"></span> </div> </section> <section class="bg-gray-800 p-6 rounded-lg shadow-xl"> <h2 class="text-2xl font-semibold mb-4">Amount</h2> <input type="number" id="adminRechargeAmount" class="w-full bg-gray-700 text-white border border-gray-600 rounded-lg p-3 text-2xl" placeholder="500"> </section> </div> <div class="space-y-4"> <button id="btnAdminConfirmRecharge" class="hidden w-full bg-green-600 hover:bg-green-700 text-white font-bold py-4 px-6 rounded-lg shadow-lg text-lg transition-all"> Recharge </button> <button id="btnAdminConfirmCashOut" class="hidden w-full bg-red-600 hover:bg-red-700 text-white font-bold py-4 px-6 rounded-lg shadow-lg text-lg transition-all"> Cash Out </button> <button id="btnAdminRechargeCancel" class="w-full bg-gray-700 hover:bg-gray-600 text-white font-bold py-3 px-4 rounded-lg shadow-lg transition-all"> Cancel </button> </div> </main> </div>
+        <!-- VIEW: Admin Recharge --><div id="adminRechargeView" class="hidden"> <header class="my-8"> <h1 class="text-3xl font-bold text-center text-green-400">Recharge / Cash Out</h1> </header> <main class="space-y-6"> <div id="admin-recharge-qr-reader-container"> <p class="text-center text-lg text-yellow-300 mb-4">Scanning...</p> <div id="admin-recharge-qr-reader" class="w-full rounded-lg overflow-hidden border-4 border-gray-700"></div> </div> <div id="adminRechargeDetails" class="hidden space-y-6"> <section class="bg-gray-800 p-6 rounded-lg shadow-xl"> <h2 class="text-2xl font-semibold mb-2">Student</h2> <div class="flex justify-between items-center"> <span id="adminRechargeStudentName" class="text-xl"></span> <span id="adminRechargeStudentBalance" class="text-sm font-bold text-green-400 break-words w-1/2 text-right"></span> </div> </section> <section class="bg-gray-800 p-6 rounded-lg shadow-xl space-y-4"> <h2 class="text-2xl font-semibold mb-4">Amount & Wallet</h2> <input type="number" id="adminRechargeAmount" class="w-full bg-gray-700 text-white border border-gray-600 rounded-lg p-3 text-2xl" placeholder="500"> <select id="adminRechargeType" class="w-full bg-gray-700 text-white border border-gray-600 rounded-lg p-3"> <option value="balance">Main Wallet (Any Stall)</option> <option value="balance_food">Food Wallet Only</option> <option value="balance_games">Games Wallet Only</option> <option value="balance_product">Product Wallet Only</option> </select> </section> </div> <div class="space-y-4"> <button id="btnAdminConfirmRecharge" class="hidden w-full bg-green-600 hover:bg-green-700 text-white font-bold py-4 px-6 rounded-lg shadow-lg text-lg transition-all"> Recharge </button> <button id="btnAdminConfirmCashOut" class="hidden w-full bg-red-600 hover:bg-red-700 text-white font-bold py-4 px-6 rounded-lg shadow-lg text-lg transition-all"> Cash Out </button> <button id="btnAdminRechargeCancel" class="w-full bg-gray-700 hover:bg-gray-600 text-white font-bold py-3 px-4 rounded-lg shadow-lg transition-all"> Cancel </button> </div> </main> </div>
 
         <!-- Overlays -->
         <div id="loadingView" class="hidden fixed inset-0 bg-black bg-opacity-75 flex flex-col items-center justify-center z-50"> <div class="spinner w-16 h-16 border-4 border-gray-600 rounded-full"></div> <p id="loadingMessage" class="text-white text-xl mt-4">Loading...</p> </div>
         <div id="modal" class="hidden fixed inset-0 bg-black bg-opacity-75 flex items-center justify-center z-50 p-4"> <div class="bg-white text-black p-6 rounded-lg shadow-xl max-w-sm w-full"> <p id="modalMessage" class="text-lg mb-4"></p> <button id="modalButton" class="w-full bg-blue-600 hover:bg-blue-700 text-white font-bold py-2 px-4 rounded-lg"> OK </button> </div> </div>
         <div id="confirmModal" class="hidden fixed inset-0 bg-black bg-opacity-75 flex items-center justify-center z-50 p-4"> <div class="bg-white text-black p-6 rounded-lg shadow-xl max-w-sm w-full"> <p id="confirmModalMessage" class="text-lg mb-6"></p> <div class="flex space-x-4"> <button id="btnConfirmNo" class="w-full bg-gray-600 hover:bg-gray-700 text-white font-bold py-2 px-4 rounded-lg"> Cancel </button> <button id="btnConfirmYes" class="w-full bg-red-600 hover:bg-red-700 text-white font-bold py-2 px-4 rounded-lg"> Yes </button> </div> </div> </div>
-        
+       
         <!-- Edit Modals -->
         <div id="editItemModal" class="hidden fixed inset-0 bg-black bg-opacity-75 flex items-center justify-center z-50 p-4"> <div class="bg-white text-black p-6 rounded-lg shadow-xl max-w-sm w-full"> <h3 class="text-xl font-semibold mb-4">Edit Item</h3> <div class="space-y-4"> <div> <label class="block text-sm">Name</label> <input type="text" id="editItemNameInput" class="w-full bg-gray-100 text-black border rounded p-3"> </div> <div> <label class="block text-sm">Price</label> <input type="number" id="editItemPriceInput" class="w-full bg-gray-100 text-black border rounded p-3"> </div> <input type="hidden" id="editItemId"> <input type="hidden" id="editItemStallId"> </div> <div class="flex space-x-4 mt-6"> <button id="btnCancelItemEdit" class="w-full bg-gray-600 text-white font-bold py-2 px-4 rounded">Cancel</button> <button id="btnSaveItemChanges" class="w-full bg-blue-600 text-white font-bold py-2 px-4 rounded">Save</button> </div> </div> </div>
         <div id="editVotingOptionsModal" class="hidden fixed inset-0 bg-black bg-opacity-75 flex items-center justify-center z-50 p-4"> <div class="bg-white text-black p-6 rounded-lg shadow-xl max-w-sm w-full"> <h3 class="text-xl font-semibold mb-4">Edit Options: <span id="editVotingCategoryTitleDisplay" class="text-blue-600"></span></h3> <div class="space-y-4"> <label class="block text-sm">Options</label> <textarea id="editVotingOptionsInput" rows="6" class="w-full bg-gray-100 text-black border rounded p-3"></textarea> <input type="hidden" id="editVotingCategoryId"> </div> <div class="flex space-x-4 mt-6"> <button id="btnCancelVotingEdit" class="w-full bg-gray-600 text-white font-bold py-2 px-4 rounded">Cancel</button> <button id="btnSaveVotingOptions" class="w-full bg-blue-600 text-white font-bold py-2 px-4 rounded">Save</button> </div> </div> </div>
-    
+   
         <!-- Global Footer -->
-        <footer class="text-center w-full mt-12 mb-4 text-gray-500 text-xs">
-            <!-- NEW: Attribution Block (Moved from homeView) -->
-            <div class="text-center text-sm text-gray-400 p-4 bg-gray-800 rounded-lg shadow-xl border border-gray-700 mb-4 mx-auto max-w-sm">
+        <footer class="text-center w-full mt-12 mb-4 text-gray-500 text-xs space-y-4">
+            <!-- Attribution Block -->
+            <div class="text-center text-sm text-gray-400 p-4 bg-gray-800 rounded-lg shadow-xl border border-gray-700 mx-auto max-w-sm">
                 <p class="mb-1 text-xs">© 2025 UPS Event | Designed & Developed by <strong class="text-white">Aditya (IoT Developer)</strong></p>
                 <p class="text-xs">✦ Need a website like this? Contact Aditya (IoT Developer) for web development services.</p>
                 <p class="text-xs mt-1 font-semibold text-blue-400">✉ adityagupta11iot@gmail.com</p>
             </div>
-
-        <footer class="text-center w-full mt-12 mb-4 text-gray-500 text-xs"> <p class="mb-1 text-xs">© 2025 UPS Event</p> </footer>
-    </div> 
+            <p class="text-xs">© 2025 UPS Event</p>
+        </footer>
+    </div>
 </body>
 </html>
